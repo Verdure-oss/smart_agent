@@ -56,51 +56,34 @@ smart-cs-multi-agent/
 │   ├── deployment.md                  # 部署指南
 │   ├── project-plan.md               # 本文件（调研与规划）
 │   └── interview/
-│       ├── resume-template.md         # 简历模板
-│       ├── star-method.md             # STAR法则面试话术
-│       ├── baguwen.md                 # 八股文题库+答案
-│       └── project-qa.md             # 项目问答模拟
+│       ├── 简历模板.md                # 简历模板
+│       ├── star_面试话术.md           # STAR法则面试话术
+│       ├── 八股文.md                  # 八股文题库+答案
+│       └── 项目问答.md                # 项目问答模拟
 │
-├── python-impl/                       # Python实现 (LangGraph)
-│   ├── agents/
-│   │   ├── supervisor.py              # Supervisor编排Agent
-│   │   ├── intent_router.py           # 意图路由Agent
-│   │   ├── knowledge_rag.py           # 知识检索Agent (RAG)
-│   │   ├── ticket_handler.py          # 工单处理Agent
-│   │   └── compliance_checker.py      # 合规审查Agent
-│   ├── memory/
-│   │   ├── working_memory.py          # 工作记忆
-│   │   ├── short_term.py              # 短期记忆(Redis)
-│   │   └── long_term.py              # 长期记忆(向量库)
-│   ├── mcp/                           # MCP工具协议
-│   │   └── mcp_server.py
-│   ├── tracing/                       # OpenTelemetry追踪
-│   │   └── otel_config.py
-│   ├── api/                           # FastAPI接口
-│   │   └── main.py
-│   ├── requirements.txt
-│   ├── Dockerfile
-│   └── .env.example
-│
-├── java-impl/                         # Java实现 (Spring AI)
-│   ├── src/main/java/com/smartcs/
-│   │   ├── agent/                     # Agent实现
-│   │   ├── memory/                    # 分层记忆
-│   │   ├── mcp/                       # MCP集成
-│   │   ├── tracing/                   # 追踪
-│   │   └── config/                    # 配置+Controller
-│   ├── pom.xml
-│   └── Dockerfile
-│
-├── go-impl/                           # Go实现 (Gin + 原生并发)
-│   ├── agent/                         # Agent实现
-│   ├── memory/                        # 分层记忆
-│   ├── mcp/                           # MCP集成
-│   ├── tracing/                       # 追踪
-│   ├── api/                           # HTTP服务
-│   ├── go.mod
-│   ├── main.go
-│   └── Dockerfile
+├── agents/                            # Python Agent实现 (LangGraph)
+│   ├── supervisor.py                  # Supervisor编排Agent
+│   ├── intent_router.py               # 意图路由Agent
+│   ├── knowledge_rag.py               # 知识检索Agent (RAG)
+│   ├── ticket_handler.py              # 工单处理Agent
+│   └── compliance_checker.py          # 合规审查Agent
+├── memory/
+│   ├── working_memory.py              # 工作记忆
+│   ├── short_term.py                  # 短期记忆(Redis)
+│   └── long_term.py                   # 长期记忆(向量库)
+├── mcp/                               # MCP工具协议
+│   └── mcp_server.py
+├── tracing/                           # OpenTelemetry追踪
+│   └── otel_config.py
+├── api/                               # FastAPI接口
+│   └── main.py
+├── frontend/                          # React + Vite 前端联调页
+│   ├── src/
+│   ├── package.json
+│   └── vite.config.ts
+├── requirements.txt
+├── Dockerfile
+├── .env.example
 │
 └── docker-compose.yml                 # 一键启动全部服务
 ```

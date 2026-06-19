@@ -44,8 +44,17 @@ docker-compose.override.yml
 # Logs
 *.log
 logs/
+node_modules/
 
 # Data
 *.db
 *.sqlite3
 vector_store/
+
+# Frontend build artifacts
+*.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js
+
+# Project prompts (internal use)
+prompt.md

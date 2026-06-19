@@ -6,6 +6,7 @@ Supervisor编排Agent — 中央协调者
 
 from __future__ import annotations
 
+import os
 import operator
 from typing import Annotated, Any, Literal, TypedDict
 
@@ -27,16 +28,17 @@ from tracing.otel_config import trace_agent_call
 
 # ─── 状态定义 ───
 
+# /api/chat 里创建的 initial_state，就是这张图运行的初始状态。
 class AgentState(TypedDict):
     """Supervisor编排的全局状态"""
     messages: Annotated[list[BaseMessage], add_messages]
     user_id: str
     session_id: str
-    intent: str
-    sub_results: dict[str, Any]
-    compliance_passed: bool
+    intent: str  # 当前意图（查订单 / 退款等）
+    sub_results: dict[str, Any]  # 子 Agent / 工具执行结果
+    compliance_passed: bool # 是否通过风控/合规检查
     final_response: str
-    current_agent: str
+    current_agent: str  # 当前在执行哪个 Agent
     retry_count: int
 
 
@@ -85,7 +87,6 @@ class SupervisorNode:
 
         response = await self.llm.ainvoke(routing_prompt)
         intent = response.content.strip().lower()
-
         valid_intents = {"knowledge_rag", "ticket_handler", "compliance_checker"}
         if intent not in valid_intents:
             intent = "knowledge_rag"
@@ -101,6 +102,7 @@ class SupervisorNode:
     @trace_agent_call("supervisor_synthesize")
     async def synthesize_response(self, state: AgentState) -> AgentState:
         """汇总子Agent结果，生成最终回复"""
+        # 直接汇总所有结果,规则式汇总器
         sub_results = state.get("sub_results", {})
         compliance_passed = state.get("compliance_passed", True)
 
@@ -112,7 +114,7 @@ class SupervisorNode:
         else:
             result_parts = []
             for agent_name, result in sub_results.items():
-                if result:
+                if isinstance(result, str) and result.strip():
                     result_parts.append(result)
             final_response = "\n\n".join(result_parts) if result_parts else "抱歉，暂时无法处理您的请求，请稍后重试。"
 
@@ -126,7 +128,7 @@ class SupervisorNode:
 # ─── 路由函数 ───
 
 def route_to_agent(state: AgentState) -> str:
-    """根据意图路由到对应Agent节点"""
+    """根据意图路由到对应Agent节点,把意图字符串翻译成图节点名"""
     intent = state.get("intent", "knowledge_rag")
     route_map = {
         "knowledge_rag": "knowledge_rag",
@@ -164,7 +166,7 @@ def create_supervisor_graph(
         enable_checkpointing: 是否启用检查点（支持断点恢复）
     """
     if llm is None:
-        llm = ChatOpenAI(model="gpt-4o", temperature=0)
+        llm = ChatOpenAI(model=os.getenv("MODEL_NAME", "gpt-4o"), temperature=0)
     if working_memory is None:
         working_memory = WorkingMemory()
 
@@ -183,8 +185,10 @@ def create_supervisor_graph(
     graph.add_node("compliance_check", compliance_agent.process)
     graph.add_node("synthesize", supervisor.synthesize_response)
 
+    # 每次 graph.ainvoke(...) 被调用时，都先从 supervisor_route 开始跑。
     graph.set_entry_point("supervisor_route")
 
+    # 调用 route_to_agent(state) 动态决定下一步去哪
     graph.add_conditional_edges(
         "supervisor_route",
         route_to_agent,
@@ -201,6 +205,8 @@ def create_supervisor_graph(
     graph.add_edge("synthesize", END)
 
     checkpointer = MemorySaver() if enable_checkpointing else None
+    
+    # 生成一个真正可执行的图对象。
     compiled = graph.compile(checkpointer=checkpointer)
 
     return compiled

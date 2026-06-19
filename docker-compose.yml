@@ -18,10 +18,12 @@ services:
   # Python实现
   python-agent:
     build:
-      context: ./python-impl
+      context: .
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
@@ -29,35 +31,6 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - OTEL_SERVICE_NAME=smart-cs-python
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
-    depends_on:
-      redis:
-        condition: service_healthy
-
-  # Java实现
-  java-agent:
-    build:
-      context: ./java-impl
-      dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-    depends_on:
-      redis:
-        condition: service_healthy
-
-  # Go实现
-  go-agent:
-    build:
-      context: ./go-impl
-      dockerfile: Dockerfile
-    ports:
-      - "8090:8090"
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - PORT=8090
     depends_on:
       redis:
         condition: service_healthy

@@ -192,7 +192,7 @@ class MCPToolServer:
 
 def create_default_tools(server: MCPToolServer) -> MCPToolServer:
     """注册默认的MCP工具集"""
-
+    # 用 装饰器（decorator）把函数注册成一个“可被 Agent 调用的工具”
     @server.register(
         name="order_query",
         description="查询订单信息，支持按订单号或用户ID查询",
@@ -256,6 +256,10 @@ def create_default_tools(server: MCPToolServer) -> MCPToolServer:
             "priority": priority,
         }
 
+    # 把函数本身 
+    # 连同工具名、描述、input_schema
+    # 一起封装成 ToolDefinition
+    # 放进 self._tools[name]
     @server.register(
         name="risk_check",
         description="风控接口 — 检查交易/操作的风险等级",

@@ -68,6 +68,7 @@ class LongTermMemory:
         简易文本嵌入（演示用）。
         生产环境应替换为 OpenAI Embedding API 或本地模型。
         """
+        # 把文本 text 转成一个唯一的哈希字符串（类似指纹）
         text_hash = hashlib.sha256(text.encode()).hexdigest()
         np.random.seed(int(text_hash[:8], 16) % (2**32))
         vec = np.random.randn(self.embedding_dim).astype(np.float32)
@@ -76,8 +77,11 @@ class LongTermMemory:
 
     def add_document(self, content: str, source: str = "", metadata: dict | None = None) -> str:
         """添加文档到向量库"""
+        
+        # 生成唯一id
         doc_id = hashlib.md5(content.encode()).hexdigest()[:12]
 
+        # 内容\来源\metadata
         doc = {
             "id": doc_id,
             "content": content,
@@ -181,7 +185,11 @@ class LongTermMemory:
             para = para.strip()
             if not para:
                 continue
-
+            # 判断段落长度是否超过目标
+            # 否则写入current_chunk
+            # 是则写入chunks列表中,待返回
+            # 如果没有current_chunk说明段落太长,需要以句子切分,一句句切.
+            # 以固定长度切分.
             if len(current_chunk) + len(para) <= chunk_size:
                 current_chunk += para + "\n\n"
             else:

@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import functools
+import socket
 import time
+from urllib.parse import urlparse
 from typing import Any, Callable
 
 try:
@@ -22,6 +24,23 @@ except ImportError:
 
 
 _tracer = None
+
+
+def _is_otlp_endpoint_reachable(endpoint: str, timeout: float = 0.5) -> bool:
+    """Quick TCP preflight to avoid noisy OTLP retry logs in local development."""
+    # 避免本地开发时 OTLP 后端没启动，控制台疯狂打印 exporter 重试错误。
+    parsed = urlparse(endpoint)
+    host = parsed.hostname
+    port = parsed.port
+
+    if not host or not port:
+        return False
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def init_tracer(
@@ -44,15 +63,20 @@ def init_tracer(
     provider = TracerProvider(resource=resource)
 
     if otlp_endpoint:
-        try:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-            exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
-        except ImportError:
-            exporter = ConsoleSpanExporter()
+        if _is_otlp_endpoint_reachable(otlp_endpoint):
+            try:
+                from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+                exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
+            except ImportError:
+                exporter = ConsoleSpanExporter()
+                
+        else:
+            exporter = None
     else:
-        exporter = ConsoleSpanExporter()
+        exporter = None
 
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+    if exporter is not None:
+        provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
     _tracer = trace.get_tracer(service_name)
 

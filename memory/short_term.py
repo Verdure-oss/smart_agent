@@ -41,6 +41,7 @@ class ShortTermMemory:
 
     async def _get_redis(self):
         """懒加载Redis连接"""
+        # 第一次用到时才连接 Redis
         if self._redis is None:
             if aioredis is None:
                 return None
@@ -54,6 +55,7 @@ class ShortTermMemory:
     def _session_key(self, session_id: str) -> str:
         return f"smartcs:short_term:{session_id}"
 
+    # 把一条对话消息存到“会话记忆”（优先 Redis，否则内存）
     async def add_message(self, session_id: str, role: str, content: str) -> None:
         """添加一条对话消息"""
         message = {
@@ -66,10 +68,16 @@ class ShortTermMemory:
 
         if r is not None:
             key = self._session_key(session_id)
+            # 加到列表尾（像聊天记录）
             await r.rpush(key, json.dumps(message, ensure_ascii=False))
+            
+            # 只保留最近 N 条（防止无限增长
             await r.ltrim(key, -self.max_turns, -1)
+            
+            # 设置过期时间（会话自动清理）
             await r.expire(key, self.ttl_seconds)
         else:
+            print('未找到可用redis！！')
             if session_id not in self._fallback_store:
                 self._fallback_store[session_id] = []
             self._fallback_store[session_id].append(message)

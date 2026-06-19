@@ -1,11 +1,12 @@
 # 🤖 智能客服多Agent系统
 
-> **企业级面试项目全攻略** — 面向金融/电商场景，包含 Python / Java / Go 三语言完整实现 + 配套面试材料，从零到面试一站搞定。
+> **当前仓库聚焦 Python + FastAPI 实现**，并补充了本地前后端联调页面与配套面试材料，方便你直接上手调试完整链路。
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)](https://www.python.org/)
-[![Java](https://img.shields.io/badge/Java-17+-orange?logo=openjdk)](https://openjdk.org/)
-[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)](https://golang.org/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-green)](https://github.com/langchain-ai/langgraph)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-18-blue?logo=react)](https://react.dev/)
+[![Vite](https://img.shields.io/badge/Vite-5-646CFF?logo=vite)](https://vitejs.dev/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-0.3+-green)](https://github.com/langchain-ai/langgraph)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 ---
@@ -16,7 +17,7 @@
 - [系统架构](#-系统架构)
 - [核心功能](#-核心功能)
 - [技术栈](#-技术栈)
-- [三语言实现对比](#-三语言实现对比)
+- [当前实现说明](#-当前实现说明)
 - [快速开始](#-快速开始)
 - [项目结构](#-项目结构)
 - [核心代码解析](#-核心代码解析)
@@ -33,7 +34,8 @@
 **这个项目能帮你做什么？**
 
 - ✅ **面试加分项**：拥有一个真实完整的多Agent项目，不再只是CRUD
-- ✅ **三语言实现**：Python/Java/Go均有完整代码，适配不同岗位需求
+- ✅ **Python主线清晰**：当前仓库直接保留可运行的 Python 后端实现
+- ✅ **联调闭环完整**：新增 `frontend/` 聊天页面，方便前后端一起调试
 - ✅ **面试材料齐全**：简历模板、STAR话术、八股文题库一应俱全
 - ✅ **学习参考**：代码有详细注释，架构文档有图文说明
 
@@ -200,149 +202,104 @@
 
 ---
 
-## 🔀 三语言实现对比
+## 🧭 当前实现说明
 
-| 维度 | Python (LangGraph) | Java (Spring AI) | Go (Eino) |
-|------|-------------------|------------------|-----------|
-| **目录** | [`python-impl/`](./python-impl/) | [`java-impl/`](./java-impl/) | [`go-impl/`](./go-impl/) |
-| **编排框架** | LangGraph StateGraph | Spring AI Agent | Eino Graph/Workflow |
-| **状态管理** | TypedDict + Checkpoint | POJO | struct |
-| **并行方式** | asyncio | CompletableFuture | goroutine |
-| **生态** | LangSmith / LangServe | Spring 全家桶 | CloudWeGo |
-| **适合场景** | AI原型、数据科学团队 | 企业级金融/银行 | 高并发云原生微服务 |
-| **生产成熟度** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
-| **面试亮点** | 最主流AI开发栈 | 大厂Java面试必考 | 字节/腾讯Go岗位 |
+| 模块 | 当前状态 | 说明 |
+|------|----------|------|
+| Python 后端 | ✅ 已在仓库根目录 | LangGraph + FastAPI，多Agent 主链路 |
+| 前端联调 | ✅ 新增 [`frontend/`](./frontend/) | React + Vite 聊天页，直接复用现有 API |
+| Docker | ⚠️ 可选 | 已收敛为 Python / Redis / Jaeger 三个服务 |
+| Java / Go | ⏸️ 当前分支未包含 | 旧路径已从启动说明中移除，避免误导 |
 
 ---
 
 ## 🚀 快速开始
 
 ### 前置条件
-- 一个 OpenAI API Key（或其他LLM的Key）
-- Docker（可选，用于一键启动）
+- Python 3.11+
+- Node.js 18+
+- 一个 OpenAI API Key（或其他 LLM 的 Key）
+- Docker（可选，用于补 Redis / Jaeger）
 
-### 方式一：Docker 一键启动（推荐新手）
+### 方式一：直接运行后端
 
-```bash
-# 1. 克隆项目
-git clone https://github.com/bcefghj/smart-cs-multi-agent.git
-cd smart-cs-multi-agent
-
-# 2. 配置API Key
-cp python-impl/.env.example python-impl/.env
-# 编辑 .env 文件，填入你的 OPENAI_API_KEY
-
-# 3. 一键启动所有服务
-docker-compose up -d
-
-# 4. 访问接口
-# API文档: http://localhost:8000/docs
-# 追踪UI:  http://localhost:16686 (Jaeger)
-```
-
-### 方式二：Python 版本（直接运行）
-
-```bash
-# 进入Python实现目录
-cd python-impl
-
-# 安装依赖
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-
-# 配置环境变量
-cp .env.example .env
-# 编辑 .env，至少填写：
-# OPENAI_API_KEY=你的key
-# OPENAI_BASE_URL=https://api.openai.com/v1
-
-# 启动服务
+Copy-Item .env.example .env
 python -m api.main
-
-# 测试接口（新开终端）
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"user_id": "user_001", "message": "我想查询订单状态"}'
 ```
 
-### 方式三：Java 版本
+访问：
+
+- API 文档: `http://localhost:8000/docs`
+- 健康检查: `http://localhost:8000/health`
+
+测试接口：
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/chat" -ContentType "application/json" -Body (@{ user_id = "user_001"; message = "我想查询订单状态" } | ConvertTo-Json)
+curl.exe --% -X POST http://localhost:8000/api/chat -H "Content-Type: application/json" -d "{\"user_id\":\"user_001\",\"message\":\"我想查询订单状态\"}"
+```
+
+### 方式二：启动前端联调页面
+
+```powershell
+cd frontend
+Copy-Item .env.example .env.local
+npm install
+npm run dev
+```
+
+访问：
+
+- 前端页面: `http://localhost:5173`
+
+默认情况下，前端会通过 Vite 开发代理把 `/api` 和 `/health` 转发到 `http://localhost:8000`，因此不需要改现有 FastAPI 路由。
+
+### 方式三：可选 Docker 辅助服务
 
 ```bash
-cd java-impl
-
-# 需要 Java 17+ 和 Maven 3.8+
-mvn clean package -DskipTests
-
-# 运行
-java -jar target/smart-cs-agent-1.0.0.jar
-
-# 或者直接用Maven运行
-mvn spring-boot:run
+docker-compose up -d
 ```
 
-### 方式四：Go 版本
+当前 compose 仅包含当前分支真实存在的服务：
 
-```bash
-cd go-impl
-
-# 需要 Go 1.22+
-go mod tidy
-
-# 运行
-go run main.go
-
-# 或者编译后运行
-go build -o smart-cs-agent .
-./smart-cs-agent
-```
-
+- `redis`
+- `python-agent`
+- `jaeger`
 ---
 
 ## 📁 项目结构
 
-```
+```text
 smart-cs-multi-agent/
-│
-├── 📄 README.md                    ← 你现在看的这个文件
-├── 📄 docker-compose.yml           ← 一键启动所有服务
-├── 📄 LICENSE                      ← MIT开源协议
-│
-├── 📂 docs/                        ← 文档目录
-│   ├── 📄 architecture.md          ← 架构设计文档（含流程图）
-│   ├── 📄 code-walkthrough.md      ← 核心代码逐行解析
-│   ├── 📄 deployment.md            ← 生产环境部署指南
-│   └── 📂 interview/               ← 面试准备材料
-│       ├── 📄 resume-template.md   ← 简历模板（STAR格式）
-│       ├── 📄 star-method.md       ← 面试话术（含多场景）
-│       ├── 📄 baguwen.md           ← 30+八股文题库+详细答案
-│       └── 📄 project-qa.md        ← 20+项目深度追问+应对策略
-│
-├── 📂 python-impl/                 ← Python实现 (LangGraph + FastAPI)
-│   ├── 📄 requirements.txt         ← Python依赖包
-│   ├── 📄 Dockerfile
-│   ├── 📂 agents/                  ← 核心Agent代码
-│   │   ├── supervisor.py           ← Supervisor编排Agent（核心）
-│   │   ├── intent_router.py        ← 意图识别Agent
-│   │   ├── knowledge_rag.py        ← RAG知识检索Agent
-│   │   ├── ticket_handler.py       ← 工单处理Agent
-│   │   └── compliance_checker.py   ← 合规审查Agent
-│   ├── 📂 memory/                  ← 三层记忆系统
-│   ├── 📂 mcp/                     ← MCP工具协议实现
-│   ├── 📂 tracing/                 ← OpenTelemetry追踪
-│   └── 📂 api/                     ← FastAPI接口层
-│
-├── 📂 java-impl/                   ← Java实现 (Spring AI + Spring Boot)
-│   ├── 📄 pom.xml                  ← Maven依赖配置
-│   ├── 📄 Dockerfile
-│   └── 📂 src/main/java/com/smartcs/
-│
-└── 📂 go-impl/                     ← Go实现 (Eino框架)
-    ├── 📄 go.mod                   ← Go依赖管理
-    ├── 📄 main.go                  ← 程序入口
-    ├── 📄 Dockerfile
-    ├── 📂 agent/                   ← Agent实现
-    ├── 📂 memory/                  ← 记忆系统
-    ├── 📂 mcp/                     ← MCP协议
-    └── 📂 tracing/                 ← 链路追踪
+├── README.md                       ← 项目说明与快速开始
+├── requirements.txt                ← Python 依赖
+├── docker-compose.yml              ← Redis / Python / Jaeger 辅助服务
+├── Dockerfile                      ← Python 后端镜像构建
+├── .env.example                    ← 后端环境变量模板
+├── agents/                         ← 核心 Agent 编排与子 Agent
+├── api/                            ← FastAPI 入口与接口层
+├── memory/                         ← 工作记忆 / 短期记忆 / 长期记忆
+├── mcp/                            ← MCP 工具注册、发现与调用
+├── tracing/                        ← OpenTelemetry 配置与指标汇总
+├── frontend/                       ← React + Vite 前端联调页面
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── src/
+├── docs/                           ← 项目文档
+│   ├── deployment.md               ← 当前部署与联调指南
+│   ├── 架构.md                     ← 系统架构说明
+│   ├── 核心代码讲解.md             ← 关键代码解析
+│   ├── 半天速成精读表.md           ← 快速理解路径
+│   └── interview/                  ← 面试准备材料
+│       ├── 简历模板.md
+│       ├── star_面试话术.md
+│       ├── 八股文.md
+│       └── 项目问答.md
+└── LICENSE
 ```
 
 ---
@@ -354,7 +311,7 @@ smart-cs-multi-agent/
 这是整个系统最重要的部分，理解了这个代码，面试时就能讲清楚多Agent协作原理：
 
 ```python
-# python-impl/agents/supervisor.py
+# agents/supervisor.py
 
 # 1. 定义全局状态（类似"黑板"，所有Agent共享）
 class AgentState(TypedDict):
@@ -404,7 +361,7 @@ def create_supervisor_graph():
 ### MCP工具协议实现
 
 ```python
-# python-impl/mcp/tools.py
+# mcp/mcp_server.py
 
 # MCP工具的核心：描述工具能力，让AI知道什么时候用这个工具
 order_query_tool = {

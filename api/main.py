@@ -10,10 +10,12 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from agents.supervisor import create_supervisor_graph
 from memory.working_memory import WorkingMemory
@@ -33,7 +35,12 @@ metrics = AgentMetrics()
 graph = None
 
 
-@asynccontextmanager
+class UTF8JSONResponse(JSONResponse):
+    media_type = "application/json; charset=utf-8"
+
+
+@asynccontextmanager 
+#在服务启动时执行（startup）
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     global graph
@@ -43,6 +50,7 @@ async def lifespan(app: FastAPI):
         otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
     )
 
+    # 初始化多 Agent 系统
     graph = create_supervisor_graph(
         working_memory=working_memory,
         short_term_memory=short_term_memory,
@@ -64,21 +72,40 @@ async def lifespan(app: FastAPI):
 
     yield
 
-
+# 在创建 FastAPI 应用，并把你前面的生命周期钩子挂进去
 app = FastAPI(
     title="智能客服多Agent系统",
     description="基于LangGraph的Supervisor编排多Agent智能客服系统",
     version="1.0.0",
     lifespan=lifespan,
+    default_response_class=UTF8JSONResponse,
 )
 
+# 解决“前端跨域访问后端”的问题（CORS）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # 允许所有网站访问（开发用）
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["*"], # 允许所有请求方式（GET / POST / DELETE）
     allow_headers=["*"],
 )
+
+# 自定义全局异常处理（统一返回格式）
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return UTF8JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return UTF8JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+    )
 
 
 class ChatRequest(BaseModel):
@@ -94,6 +121,7 @@ class ChatResponse(BaseModel):
     compliance_passed: bool
 
 
+# 前端可以用 POST /api/chat 调这个接口，而且返回的数据结构要符合 ChatResponse。
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """主聊天接口"""
@@ -121,6 +149,7 @@ async def chat(request: ChatRequest):
     config = {"configurable": {"thread_id": session_id}}
 
     try:
+        # 触发整个多 Agent 流程执行（异步运行图 graph）
         result = await graph.ainvoke(initial_state, config=config)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"处理失败: {str(e)}")
@@ -179,6 +208,7 @@ async def health_check():
     return {"status": "healthy", "version": "1.0.0"}
 
 
+# 系统入口，负责启动应用、注册 API、初始化记忆和工具，并把聊天请求交给 `LangGraph` 图执行。
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

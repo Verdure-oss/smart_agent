@@ -197,7 +197,7 @@
 | **缓存** | Redis | 短期记忆、会话管理 |
 | **追踪** | OpenTelemetry + Jaeger | 全链路追踪 |
 | **API** | FastAPI / Spring Boot / Gin | REST接口 |
-| **容器** | Docker + Docker Compose | 一键部署 |
+| **容器** | Docker + Docker Compose | 一键部署（已移除，见说明） |
 | **协议** | MCP (Model Context Protocol) | 工具调用标准 |
 
 ---
@@ -208,7 +208,7 @@
 |------|----------|------|
 | Python 后端 | ✅ 已在仓库根目录 | LangGraph + FastAPI，多Agent 主链路 |
 | 前端联调 | ✅ 新增 [`frontend/`](./frontend/) | React + Vite 聊天页，直接复用现有 API |
-| Docker | ⚠️ 可选 | 已收敛为 Python / Redis / Jaeger 三个服务 |
+| Docker | ⏸️ 已移除 | Docker 相关配置已清理，如需可自行添加 |
 | Java / Go | ⏸️ 当前分支未包含 | 旧路径已从启动说明中移除，避免误导 |
 
 ---
@@ -219,7 +219,7 @@
 - Python 3.11+
 - Node.js 18+
 - 一个 OpenAI API Key（或其他 LLM 的 Key）
-- Docker（可选，用于补 Redis / Jaeger）
+- Redis（本地安装或远程服务）
 
 ### 方式一：直接运行后端
 
@@ -258,17 +258,6 @@ npm run dev
 
 默认情况下，前端会通过 Vite 开发代理把 `/api` 和 `/health` 转发到 `http://localhost:8000`，因此不需要改现有 FastAPI 路由。
 
-### 方式三：可选 Docker 辅助服务
-
-```bash
-docker-compose up -d
-```
-
-当前 compose 仅包含当前分支真实存在的服务：
-
-- `redis`
-- `python-agent`
-- `jaeger`
 ---
 
 ## 📁 项目结构
@@ -277,8 +266,6 @@ docker-compose up -d
 smart-cs-multi-agent/
 ├── README.md                       ← 项目说明与快速开始
 ├── requirements.txt                ← Python 依赖
-├── docker-compose.yml              ← Redis / Python / Jaeger 辅助服务
-├── Dockerfile                      ← Python 后端镜像构建
 ├── .env.example                    ← 后端环境变量模板
 ├── agents/                         ← 核心 Agent 编排与子 Agent
 ├── api/                            ← FastAPI 入口与接口层
@@ -392,13 +379,13 @@ order_query_tool = {
 
 | 文档 | 内容说明 | 链接 |
 |------|----------|------|
-| **简历模板** | STAR法则项目经历写法，覆盖Python/Java/Go不同岗位角度 | [查看](./docs/interview/resume-template.md) |
-| **STAR面试话术** | "请介绍你的项目"等高频问题的标准回答模板 | [查看](./docs/interview/star-method.md) |
-| **八股文题库** | 30+高频面试题 + 详细答案 + 追问应对策略 | [查看](./docs/interview/baguwen.md) |
-| **项目深度追问** | 面试官最爱问的20+深度问题 + 踩坑分享 | [查看](./docs/interview/project-qa.md) |
-| **架构设计文档** | 完整流程图、时序图、技术选型对比分析 | [查看](./docs/architecture.md) |
-| **代码讲解文档** | 核心模块逐行解析，设计模式说明 | [查看](./docs/code-walkthrough.md) |
-| **部署指南** | Docker一键部署、生产环境配置、监控告警 | [查看](./docs/deployment.md) |
+| **简历模板** | STAR法则项目经历写法，覆盖Python/Java/Go不同岗位角度 | [查看](./docs/interview/简历模板.md) |
+| **STAR面试话术** | "请介绍你的项目"等高频问题的标准回答模板 | [查看](./docs/interview/star_面试话术.md) |
+| **八股文题库** | 30+高频面试题 + 详细答案 + 追问应对策略 | [查看](./docs/interview/八股文.md) |
+| **项目深度追问** | 面试官最爱问的20+深度问题 + 踩坑分享 | [查看](./docs/interview/项目问答.md) |
+| **架构设计文档** | 完整流程图、时序图、技术选型对比分析 | [查看](./docs/架构.md) |
+| **代码讲解文档** | 核心模块逐行解析，设计模式说明 | [查看](./docs/核心代码讲解.md) |
+| **部署指南** | 本地启动、前后端联调、环境变量配置 | [查看](./docs/deployment.md) |
 
 ### 常见面试问题预览
 

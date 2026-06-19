@@ -71,28 +71,9 @@ npm run dev
 - 页面刷新后，前端会调用 `GET /api/history/{session_id}` 恢复上下文
 - 点击“新会话”按钮只会清除本地 `session_id`，不会改动后端 Agent 逻辑
 
-## 4. 可选 Docker 辅助服务
+## 4. API 接口说明
 
-当前 `docker-compose.yml` 已经调整为匹配这个分支真实存在的服务，只保留：
-
-- `redis`
-- `python-agent`
-- `jaeger`
-
-如果你后续想用 Docker 补齐 Redis 和 Jaeger，可以直接在仓库根目录执行：
-
-```bash
-docker-compose up -d
-```
-
-常用访问地址：
-
-- Python API: `http://localhost:8000/docs`
-- Jaeger UI: `http://localhost:16686`
-
-## 5. API 接口说明
-
-当前前端联调第一期主要使用这三个接口：
+当前前端联调主要使用这三个接口：
 
 - `POST /api/chat`
 - `GET /api/history/{session_id}`
@@ -132,7 +113,7 @@ docker-compose up -d
 }
 ```
 
-## 6. 环境变量说明
+## 5. 环境变量说明
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|

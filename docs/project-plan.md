@@ -82,10 +82,7 @@ smart-cs-multi-agent/
 │   ├── package.json
 │   └── vite.config.ts
 ├── requirements.txt
-├── Dockerfile
-├── .env.example
-│
-└── docker-compose.yml                 # 一键启动全部服务
+└── .env.example
 ```
 
 ## 三、核心技术亮点（面试重点）

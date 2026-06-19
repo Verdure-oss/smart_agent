@@ -1,20 +1,22 @@
 """
 Supervisor编排Agent — 中央协调者
-负责接收用户请求，根据意图路由到对应子Agent，汇总结果返回。
-采用LangGraph StateGraph实现，支持并行调度和Human-in-the-Loop断点。
+负责接收用户请求，拆解为子任务，通过Intent Router路由到对应Agent并行/串行执行，汇总结果返回。
+采用LangGraph StateGraph + Send()实现并行扇出。
 """
 
 from __future__ import annotations
 
 import os
-import operator
-from typing import Annotated, Any, Literal, TypedDict
+import logging
+from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Send
+from pydantic import BaseModel, Field
 
 from agents.intent_router import IntentRouterAgent
 from agents.knowledge_rag import KnowledgeRAGAgent
@@ -25,84 +27,152 @@ from memory.short_term import ShortTermMemory
 from memory.long_term import LongTermMemory
 from tracing.otel_config import trace_agent_call
 
+logger = logging.getLogger(__name__)
+
+
+# ─── Pydantic Model（Supervisor 结构化输出） ───
+
+class SubTask(BaseModel):
+    """Supervisor 拆解出的单个子任务"""
+    id: str = Field(description="任务唯一标识，如 task_1, task_2")
+    description: str = Field(description="任务的清晰描述，供下游 Agent 理解和执行")
+    entities: dict[str, str] = Field(
+        description="从用户消息中提取的关键实体，如订单号、产品名、金额",
+        default_factory=dict,
+    )
+
+
+class SupervisorOutput(BaseModel):
+    """Supervisor 任务拆解的结构化输出"""
+    sub_tasks: list[SubTask] = Field(description="拆解后的子任务列表")
+    needs_parallel: bool = Field(
+        description="子任务之间是否可以并行执行。无依赖时为 true，有条件依赖时为 false"
+    )
+
 
 # ─── 状态定义 ───
 
-# /api/chat 里创建的 initial_state，就是这张图运行的初始状态。
+def merge_sub_results(existing: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """合并并行 Agent 的子结果"""
+    return {**existing, **update}
+
+
 class AgentState(TypedDict):
     """Supervisor编排的全局状态"""
     messages: Annotated[list[BaseMessage], add_messages]
     user_id: str
     session_id: str
-    intent: str  # 当前意图（查订单 / 退款等）
-    sub_results: dict[str, Any]  # 子 Agent / 工具执行结果
-    compliance_passed: bool # 是否通过风控/合规检查
+    intent: str
+    sub_results: Annotated[dict[str, Any], merge_sub_results]
+    compliance_passed: bool
     final_response: str
-    current_agent: str  # 当前在执行哪个 Agent
+    current_agent: str
     retry_count: int
+    sub_tasks: list[dict[str, Any]]
+    needs_parallel: bool
+
+
+# ─── Prompt 定义 ───
+
+SUPERVISOR_DECOMPOSE_PROMPT = """你是一个智能客服系统的 Supervisor（主管编排Agent）。
+
+你的职责是将用户消息拆解为独立的子任务。每个子任务应该是一个原子操作，可以被单独执行。
+
+规则：
+1. 从用户消息中识别所有独立的请求
+2. 为每个子任务提取关键实体（订单号、产品名、金额等）
+3. 判断子任务之间是否有依赖关系，决定是否可以并行
+4. 如果只有一个意图，返回单个子任务即可
+
+金融场景示例：
+用户: "帮我查订单TK-001，再看看理财产品A的收益"
+→ sub_tasks: [
+    {id: "task_1", description: "查询订单TK-001的当前状态", entities: {order_id: "TK-001"}},
+    {id: "task_2", description: "查询理财产品A的年化收益率", entities: {product: "理财产品A"}}
+  ]
+→ needs_parallel: true
+
+用户: "理财产品A收益多少"
+→ sub_tasks: [
+    {id: "task_1", description: "查询理财产品A的收益率", entities: {product: "理财产品A"}}
+  ]
+→ needs_parallel: false
+
+用户: "怎么退款"
+→ sub_tasks: [
+    {id: "task_1", description: "查询退款政策和流程", entities: {}}
+  ]
+→ needs_parallel: false
+"""
+
+INTENT_ROUTER_PROMPT = """你是一个意图识别Agent，负责为每个子任务选择最合适的目标Agent。
+
+可用的Agent：
+- knowledge_rag: 知识库检索和回答（产品咨询、政策查询、流程了解）
+- ticket_handler: 工单创建和查询（退款、理赔、开户、订单查询）
+- compliance_checker: 合规审查（资金安全、账户异常、欺诈举报）
+
+金融场景规则：
+- 涉及退款、理赔、开户、订单查询 → ticket_handler
+- 涉及产品咨询、利率查询、政策了解 → knowledge_rag
+- 涉及资金安全、账户异常、欺诈举报 → compliance_checker
+
+只返回Agent名称，不要其他内容。
+"""
 
 
 # ─── Supervisor节点 ───
 
-SUPERVISOR_SYSTEM_PROMPT = """你是一个智能客服系统的Supervisor（主管编排Agent）。
-你的职责是：
-1. 分析用户意图，决定分发给哪个子Agent处理
-2. 汇总子Agent的处理结果，生成最终回复
-3. 确保所有回复都经过合规审查
-
-可用的子Agent：
-- intent_router: 意图识别和分类
-- knowledge_rag: 知识库检索和回答
-- ticket_handler: 工单创建和查询
-- compliance_checker: 合规审查和敏感词检测
-
-根据用户消息，决定下一步路由到哪个Agent。
-"""
-
-
 class SupervisorNode:
-    """Supervisor决策节点"""
+    """Supervisor决策节点：任务拆解 + 结果汇总"""
 
     def __init__(self, llm: ChatOpenAI, working_memory: WorkingMemory):
         self.llm = llm
+        self.llm_with_structure = llm.with_structured_output(SupervisorOutput)
         self.working_memory = working_memory
 
-    @trace_agent_call("supervisor")
-    async def route_decision(self, state: AgentState) -> AgentState:
-        """分析用户意图，决定路由"""
+    @trace_agent_call("supervisor_decompose")
+    async def decompose(self, state: AgentState) -> dict[str, Any]:
+        """将用户消息拆解为子任务列表"""
         messages = state["messages"]
         session_id = state.get("session_id", "default")
 
         context = self.working_memory.get_context(session_id)
 
-        routing_prompt = [
-            SystemMessage(content=SUPERVISOR_SYSTEM_PROMPT),
+        prompt = [
+            SystemMessage(content=SUPERVISOR_DECOMPOSE_PROMPT),
             SystemMessage(content=f"当前工作记忆上下文: {context}"),
             *messages,
-            HumanMessage(content=(
-                "请分析用户的最新消息，返回应该路由到的Agent名称。"
-                "只返回以下之一: knowledge_rag, ticket_handler, compliance_checker"
-            )),
         ]
 
-        response = await self.llm.ainvoke(routing_prompt)
-        intent = response.content.strip().lower()
-        valid_intents = {"knowledge_rag", "ticket_handler", "compliance_checker"}
-        if intent not in valid_intents:
-            intent = "knowledge_rag"
+        output: SupervisorOutput = await self.llm_with_structure.ainvoke(prompt)
 
-        self.working_memory.update(session_id, {"last_intent": intent})
+        sub_tasks = [
+            {
+                "id": task.id,
+                "description": task.description,
+                "entities": task.entities,
+            }
+            for task in output.sub_tasks
+        ]
+
+        self.working_memory.update(session_id, {
+            "sub_tasks": sub_tasks,
+            "needs_parallel": output.needs_parallel,
+        })
+
+        logger.info("Supervisor 拆解为 %d 个子任务, 并行=%s", len(sub_tasks), output.needs_parallel)
 
         return {
-            **state,
-            "intent": intent,
+            "intent": "parallel" if output.needs_parallel else "single",
             "current_agent": "supervisor",
+            "sub_tasks": sub_tasks,
+            "needs_parallel": output.needs_parallel,
         }
 
     @trace_agent_call("supervisor_synthesize")
-    async def synthesize_response(self, state: AgentState) -> AgentState:
+    async def synthesize_response(self, state: AgentState) -> dict[str, Any]:
         """汇总子Agent结果，生成最终回复"""
-        # 直接汇总所有结果,规则式汇总器
         sub_results = state.get("sub_results", {})
         compliance_passed = state.get("compliance_passed", True)
 
@@ -114,33 +184,65 @@ class SupervisorNode:
         else:
             result_parts = []
             for agent_name, result in sub_results.items():
+                if agent_name == "compliance":
+                    continue
                 if isinstance(result, str) and result.strip():
                     result_parts.append(result)
             final_response = "\n\n".join(result_parts) if result_parts else "抱歉，暂时无法处理您的请求，请稍后重试。"
 
         return {
-            **state,
             "final_response": final_response,
             "messages": [AIMessage(content=final_response)],
         }
 
 
-# ─── 路由函数 ───
+# ─── Intent Router 路由 ───
 
-def route_to_agent(state: AgentState) -> str:
-    """根据意图路由到对应Agent节点,把意图字符串翻译成图节点名"""
-    intent = state.get("intent", "knowledge_rag")
-    route_map = {
-        "knowledge_rag": "knowledge_rag",
-        "ticket_handler": "ticket_handler",
-        "compliance_checker": "compliance_check",
-    }
-    return route_map.get(intent, "knowledge_rag")
+async def classify_subtask(llm: ChatOpenAI, subtask_description: str) -> str:
+    """对单个子任务调用 Intent Router，返回目标 Agent 名称"""
+    messages = [
+        SystemMessage(content=INTENT_ROUTER_PROMPT),
+        HumanMessage(content=f"子任务: {subtask_description}"),
+    ]
+
+    response = await llm.ainvoke(messages)
+    agent_name = response.content.strip().lower()
+
+    valid_agents = {"knowledge_rag", "ticket_handler", "compliance_checker"}
+    if agent_name not in valid_agents:
+        agent_name = "knowledge_rag"
+
+    return agent_name
 
 
-def should_check_compliance(state: AgentState) -> str:
-    """所有回复都需经过合规审查"""
-    return "compliance_check"
+# ─── 派发函数 ───
+
+async def dispatch(state: AgentState, llm: ChatOpenAI) -> list[Send]:
+    """对每个子任务调用 Intent Router 选择 Agent，然后用 Send() 并行派发"""
+    sub_tasks = state.get("sub_tasks", [])
+
+    if not sub_tasks:
+        return [Send("knowledge_rag", state)]
+
+    dispatch_plan: dict[str, list[str]] = {}
+    for task in sub_tasks:
+        agent_name = await classify_subtask(llm, task["description"])
+        dispatch_plan.setdefault(agent_name, []).append(task["id"])
+        logger.info("子任务 %s → %s", task["id"], agent_name)
+
+    sends = []
+    for agent_name, task_ids in dispatch_plan.items():
+        task_descriptions = [
+            t["description"] for t in sub_tasks if t["id"] in task_ids
+        ]
+        combined_description = "\n".join(f"- {d}" for d in task_descriptions)
+
+        sends.append(Send(agent_name, {
+            "messages": [HumanMessage(content=combined_description)],
+            "current_agent": agent_name,
+        }))
+
+    return sends
 
 
 # ─── 构建Graph ───
@@ -155,8 +257,7 @@ def create_supervisor_graph(
     """
     构建Supervisor编排的多Agent StateGraph。
 
-    这是整个系统的核心入口，将4个子Agent通过有向图连接起来，
-    由Supervisor节点负责路由决策和结果汇总。
+    流程: supervisor_decompose → dispatch(Send并行) → [Agent执行] → compliance_check → synthesize
 
     Args:
         llm: 语言模型实例
@@ -172,41 +273,39 @@ def create_supervisor_graph(
 
     supervisor = SupervisorNode(llm, working_memory)
 
-    intent_router = IntentRouterAgent(llm)
     knowledge_agent = KnowledgeRAGAgent(llm, long_term_memory)
     ticket_agent = TicketHandlerAgent(llm)
     compliance_agent = ComplianceCheckerAgent(llm)
 
     graph = StateGraph(AgentState)
 
-    graph.add_node("supervisor_route", supervisor.route_decision)
+    # 添加节点
+    graph.add_node("supervisor_decompose", supervisor.decompose)
     graph.add_node("knowledge_rag", knowledge_agent.process)
     graph.add_node("ticket_handler", ticket_agent.process)
     graph.add_node("compliance_check", compliance_agent.process)
     graph.add_node("synthesize", supervisor.synthesize_response)
 
-    # 每次 graph.ainvoke(...) 被调用时，都先从 supervisor_route 开始跑。
-    graph.set_entry_point("supervisor_route")
+    # 入口
+    graph.set_entry_point("supervisor_decompose")
 
-    # 调用 route_to_agent(state) 动态决定下一步去哪
+    # supervisor_decompose → Send() 并行派发到各 Agent
+    async def dispatch_edge(state: AgentState) -> list[Send]:
+        return await dispatch(state, llm)
+
     graph.add_conditional_edges(
-        "supervisor_route",
-        route_to_agent,
-        {
-            "knowledge_rag": "knowledge_rag",
-            "ticket_handler": "ticket_handler",
-            "compliance_check": "compliance_check",
-        },
+        "supervisor_decompose",
+        dispatch_edge,
     )
 
+    # 所有 Agent 汇入合规检查
     graph.add_edge("knowledge_rag", "compliance_check")
     graph.add_edge("ticket_handler", "compliance_check")
     graph.add_edge("compliance_check", "synthesize")
     graph.add_edge("synthesize", END)
 
     checkpointer = MemorySaver() if enable_checkpointing else None
-    
-    # 生成一个真正可执行的图对象。
+
     compiled = graph.compile(checkpointer=checkpointer)
 
     return compiled

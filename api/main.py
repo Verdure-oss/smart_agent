@@ -144,6 +144,8 @@ async def chat(request: ChatRequest):
         "final_response": "",
         "current_agent": "",
         "retry_count": 0,
+        "sub_tasks": [],
+        "needs_parallel": False,
     }
 
     config = {"configurable": {"thread_id": session_id}}

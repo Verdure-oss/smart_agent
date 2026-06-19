@@ -1,8 +1,7 @@
 """
 Supervisor编排Agent — 中央协调者
-负责接收用户请求，拆解为子任务，通过Intent Router路由到对应Agent并行/串行执行，汇总结果返回。
-支持子任务间的依赖关系和条件执行。
-采用LangGraph StateGraph + Send()实现并行扇出和循环调度。
+负责接收用户请求，拆解为子任务，通过Intent Router规划执行链路，逐步执行Agent。
+采用LangGraph StateGraph + 循环调度实现链路执行引擎。
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Send
 from pydantic import BaseModel, Field
 
+from agents.intent_router import IntentRouterAgent
 from agents.knowledge_rag import KnowledgeRAGAgent
 from agents.ticket_handler import TicketHandlerAgent
 from agents.compliance_checker import ComplianceCheckerAgent
@@ -63,9 +63,14 @@ class SupervisorOutput(BaseModel):
 
 # ─── 状态定义 ───
 
-def merge_sub_results(existing: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
-    """合并并行 Agent 的子结果"""
+def merge_dict(existing: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """合并字典"""
     return {**existing, **update}
+
+
+def merge_list(existing: list[str], update: list[str]) -> list[str]:
+    """合并列表，去重"""
+    return list(set(existing + update))
 
 
 class AgentState(TypedDict):
@@ -74,22 +79,29 @@ class AgentState(TypedDict):
     user_id: str
     session_id: str
     intent: str
-    sub_results: Annotated[dict[str, Any], merge_sub_results]
+    sub_results: Annotated[dict[str, Any], merge_dict]
     compliance_passed: bool
     final_response: str
     current_agent: str
     retry_count: int
+
+    # 子任务相关
     sub_tasks: list[dict[str, Any]]
     dependencies: list[dict[str, Any]]
     needs_parallel: bool
-    task_results: Annotated[dict[str, Any], merge_sub_results]
-    completed_task_ids: Annotated[list[str], merge_completed_ids]
-    dispatch_mode: str  # "parallel" | "dependent" | "single"
+    dispatch_mode: str  # "chain" | "parallel" | "single"
 
-
-def merge_completed_ids(existing: list[str], update: list[str]) -> list[str]:
-    """合并已完成任务ID列表，去重"""
-    return list(set(existing + update))
+    # 链路执行相关
+    task_chains: Annotated[dict[str, list[str]], merge_dict]
+    # task_id → Agent链路，如 {"task_1": ["knowledge_rag", "ticket_handler"]}
+    current_sub_task_id: str
+    # 当前正在执行的子任务 ID
+    current_step_index: int
+    # 当前执行到链路的第几步
+    task_results: Annotated[dict[str, Any], merge_dict]
+    # task_id → 执行结果
+    completed_task_ids: Annotated[list[str], merge_list]
+    # 已完成的子任务 ID 列表
 
 
 # ─── Prompt 定义 ───
@@ -135,21 +147,6 @@ SUPERVISOR_DECOMPOSE_PROMPT = """你是一个智能客服系统的 Supervisor（
   ]
 → dependencies: []
 → needs_parallel: false
-"""
-
-INTENT_ROUTER_PROMPT = """你是一个意图识别Agent，负责为每个子任务选择最合适的目标Agent。
-
-可用的Agent：
-- knowledge_rag: 知识库检索和回答（产品咨询、政策查询、流程了解）
-- ticket_handler: 工单创建和查询（退款、理赔、开户、订单查询）
-- compliance_checker: 合规审查（资金安全、账户异常、欺诈举报）
-
-金融场景规则：
-- 涉及退款、理赔、开户、订单查询 → ticket_handler
-- 涉及产品咨询、利率查询、政策了解 → knowledge_rag
-- 涉及资金安全、账户异常、欺诈举报 → compliance_checker
-
-只返回Agent名称，不要其他内容。
 """
 
 CONDITION_EVAL_PROMPT = """你是一个条件评估Agent。根据前置任务的执行结果，判断是否满足执行后续任务的条件。
@@ -208,10 +205,8 @@ class SupervisorNode:
         # 判断派发模式
         if dependencies:
             dispatch_mode = "dependent"
-        elif output.needs_parallel and len(sub_tasks) > 1:
-            dispatch_mode = "parallel"
         else:
-            dispatch_mode = "single"
+            dispatch_mode = "chain"
 
         self.working_memory.update(session_id, {
             "sub_tasks": sub_tasks,
@@ -231,14 +226,16 @@ class SupervisorNode:
             "dependencies": dependencies,
             "needs_parallel": output.needs_parallel,
             "dispatch_mode": dispatch_mode,
+            "task_chains": {},
             "task_results": {},
             "completed_task_ids": [],
+            "current_sub_task_id": "",
+            "current_step_index": 0,
         }
 
     @trace_agent_call("supervisor_synthesize")
     async def synthesize_response(self, state: AgentState) -> dict[str, Any]:
         """汇总子Agent结果，生成最终回复"""
-        sub_results = state.get("sub_results", {})
         task_results = state.get("task_results", {})
         compliance_passed = state.get("compliance_passed", True)
 
@@ -249,11 +246,7 @@ class SupervisorNode:
             )
         else:
             result_parts = []
-            # 优先使用 task_results（依赖模式下的结果）
-            results_to_merge = task_results if task_results else sub_results
-            for agent_name, result in results_to_merge.items():
-                if agent_name == "compliance":
-                    continue
+            for key, result in task_results.items():
                 if isinstance(result, str) and result.strip():
                     result_parts.append(result)
             final_response = "\n\n".join(result_parts) if result_parts else "抱歉，暂时无法处理您的请求，请稍后重试。"
@@ -264,23 +257,192 @@ class SupervisorNode:
         }
 
 
-# ─── Intent Router 路由 ───
+# ─── 意图路由节点 ───
 
-async def classify_subtask(llm: ChatOpenAI, subtask_description: str) -> str:
-    """对单个子任务调用 Intent Router，返回目标 Agent 名称"""
-    messages = [
-        SystemMessage(content=INTENT_ROUTER_PROMPT),
-        HumanMessage(content=f"子任务: {subtask_description}"),
-    ]
+@trace_agent_call("intent_router_node")
+async def intent_router_node(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
+    """对当前子任务进行意图分类，规划执行链路"""
+    intent_router = IntentRouterAgent(llm)
 
-    response = await llm.ainvoke(messages)
-    agent_name = response.content.strip().lower()
+    sub_tasks = state.get("sub_tasks", [])
+    completed_ids = set(state.get("completed_task_ids", []))
+    task_chains = dict(state.get("task_chains", {}))
+    dependencies = state.get("dependencies", [])
 
-    valid_agents = {"knowledge_rag", "ticket_handler", "compliance_checker"}
-    if agent_name not in valid_agents:
-        agent_name = "knowledge_rag"
+    # 找到下一个未完成的子任务
+    next_task = None
+    for task in sub_tasks:
+        if task["id"] not in completed_ids:
+            # 检查依赖是否满足
+            if _check_dependencies_met(task["id"], dependencies, completed_ids):
+                next_task = task
+                break
 
-    return agent_name
+    if next_task is None:
+        # 所有任务已完成
+        return {
+            "current_sub_task_id": "",
+            "current_step_index": 0,
+        }
+
+    task_id = next_task["id"]
+    description = next_task["description"]
+
+    # 意图分类 + 链路规划
+    intent_result = await intent_router.classify(description)
+    chain = intent_result.agent_chain
+
+    task_chains[task_id] = chain
+
+    logger.info("子任务 %s 链路规划: %s → %s", task_id, description[:30], chain)
+
+    return {
+        "current_sub_task_id": task_id,
+        "current_step_index": 0,
+        "task_chains": task_chains,
+        "intent": intent_result.primary_intent,
+    }
+
+
+def _check_dependencies_met(task_id: str, dependencies: list[dict], completed_ids: set[str]) -> bool:
+    """检查任务的所有依赖是否已满足"""
+    for dep in dependencies:
+        if dep["to_task"] == task_id:
+            if dep["from_task"] not in completed_ids:
+                return False
+    return True
+
+
+# ─── 链路执行引擎 ───
+
+async def dispatch_step(state: AgentState, llm: ChatOpenAI) -> list[Send]:
+    """执行链路中的当前步骤"""
+    task_chains = state.get("task_chains", {})
+    current_task_id = state.get("current_sub_task_id", "")
+    current_step = state.get("current_step_index", 0)
+
+    if not current_task_id or current_task_id not in task_chains:
+        return [Send("compliance_check", state)]
+
+    chain = task_chains[current_task_id]
+
+    if current_step >= len(chain):
+        return [Send("compliance_check", state)]
+
+    agent_name = chain[current_step]
+
+    # 构建上下文：用户消息 + 前面步骤的结果
+    context = _build_step_context(state, current_task_id, current_step)
+
+    logger.info("执行步骤: %s [%d/%d] → %s", current_task_id, current_step + 1, len(chain), agent_name)
+
+    return [Send(agent_name, {
+        "messages": [HumanMessage(content=context)],
+        "current_agent": agent_name,
+    })]
+
+
+def _build_step_context(state: AgentState, task_id: str, step_index: int) -> str:
+    """构建当前步骤的上下文：原始子任务描述 + 前面步骤的结果"""
+    sub_tasks = state.get("sub_tasks", [])
+    task_results = state.get("task_results", {})
+    task_chains = state.get("task_chains", {})
+
+    # 找到当前子任务的描述
+    task_desc = ""
+    for task in sub_tasks:
+        if task["id"] == task_id:
+            task_desc = task["description"]
+            break
+
+    # 收集前面步骤的结果
+    chain = task_chains.get(task_id, [])
+    prev_results = []
+    for i in range(step_index):
+        step_key = f"{task_id}_step_{i}"
+        if step_key in task_results:
+            prev_results.append(f"[{chain[i]}]: {task_results[step_key]}")
+
+    context = f"子任务: {task_desc}"
+    if prev_results:
+        context += "\n\n前面步骤的结果:\n" + "\n".join(prev_results)
+
+    return context
+
+
+def collect_step(state: AgentState) -> dict[str, Any]:
+    """收集当前步骤的结果，推进步骤索引"""
+    current_task_id = state.get("current_sub_task_id", "")
+    current_step = state.get("current_step_index", 0)
+    task_chains = state.get("task_chains", {})
+    sub_results = state.get("sub_results", {})
+
+    if not current_task_id:
+        return {}
+
+    # 从 sub_results 中提取当前 Agent 的结果
+    agent_result = ""
+    for key, value in sub_results.items():
+        if isinstance(value, str) and value.strip():
+            agent_result = value
+            break
+
+    chain = task_chains.get(current_task_id, [])
+    step_key = f"{current_task_id}_step_{current_step}"
+
+    result = {
+        "task_results": {step_key: agent_result},
+        "current_step_index": current_step + 1,
+    }
+
+    # 如果是链路的最后一步，标记子任务完成
+    if current_step + 1 >= len(chain):
+        # 汇总该子任务所有步骤的结果
+        all_step_results = []
+        for i in range(len(chain)):
+            k = f"{current_task_id}_step_{i}"
+            if k in state.get("task_results", {}):
+                all_step_results.append(state["task_results"][k])
+            elif i == current_step:
+                all_step_results.append(agent_result)
+
+        final_result = "\n".join(all_step_results) if all_step_results else agent_result
+        result["task_results"][current_task_id] = final_result
+        result["completed_task_ids"] = [current_task_id]
+
+    return result
+
+
+def check_more_steps(state: AgentState) -> str:
+    """检查是否还有更多步骤或子任务需要执行"""
+    task_chains = state.get("task_chains", {})
+    current_task_id = state.get("current_sub_task_id", "")
+    current_step = state.get("current_step_index", 0)
+    sub_tasks = state.get("sub_tasks", [])
+    completed_ids = set(state.get("completed_task_ids", []))
+    dependencies = state.get("dependencies", [])
+
+    # 当前链路还有步骤
+    if current_task_id and current_task_id in task_chains:
+        chain = task_chains[current_task_id]
+        if current_step < len(chain):
+            return "dispatch_step"
+
+    # 还有子任务未执行
+    for task in sub_tasks:
+        if task["id"] not in completed_ids:
+            if _check_dependencies_met(task["id"], dependencies, completed_ids):
+                return "intent_router"
+
+    # 检查依赖模式下是否有任务需要条件评估
+    if dependencies:
+        for task in sub_tasks:
+            if task["id"] not in completed_ids:
+                # 有未完成的任务，但依赖未满足 → 跳过
+                logger.info("子任务 %s 依赖未满足，跳过", task["id"])
+
+    # 全部完成
+    return "compliance_check"
 
 
 async def evaluate_condition(llm: ChatOpenAI, from_result: str, condition: str) -> bool:
@@ -296,175 +458,6 @@ async def evaluate_condition(llm: ChatOpenAI, from_result: str, condition: str) 
     return result == "true"
 
 
-# ─── 派发函数 ───
-
-async def dispatch(state: AgentState, llm: ChatOpenAI) -> list[Send]:
-    """对每个子任务调用 Intent Router 选择 Agent，然后用 Send() 并行派发"""
-    sub_tasks = state.get("sub_tasks", [])
-
-    if not sub_tasks:
-        return [Send("knowledge_rag", state)]
-
-    dispatch_plan: dict[str, list[str]] = {}
-    for task in sub_tasks:
-        agent_name = await classify_subtask(llm, task["description"])
-        dispatch_plan.setdefault(agent_name, []).append(task["id"])
-        logger.info("子任务 %s → %s", task["id"], agent_name)
-
-    sends = []
-    for agent_name, task_ids in dispatch_plan.items():
-        task_descriptions = [
-            t["description"] for t in sub_tasks if t["id"] in task_ids
-        ]
-        combined_description = "\n".join(f"- {d}" for d in task_descriptions)
-
-        sends.append(Send(agent_name, {
-            "messages": [HumanMessage(content=combined_description)],
-            "current_agent": agent_name,
-        }))
-
-    return sends
-
-
-# ─── 依赖调度函数 ───
-
-def get_ready_tasks(state: AgentState) -> list[dict[str, Any]]:
-    """获取当前可以执行的任务（依赖已满足的任务）"""
-    sub_tasks = state.get("sub_tasks", [])
-    dependencies = state.get("dependencies", [])
-    completed_ids = set(state.get("completed_task_ids", []))
-    task_results = state.get("task_results", {})
-
-    # 构建依赖映射: to_task → [(from_task, condition), ...]
-    dep_map: dict[str, list[tuple[str, str]]] = {}
-    for dep in dependencies:
-        dep_map.setdefault(dep["to_task"], []).append(
-            (dep["from_task"], dep["condition"])
-        )
-
-    ready = []
-    for task in sub_tasks:
-        task_id = task["id"]
-
-        # 已完成的跳过
-        if task_id in completed_ids:
-            continue
-
-        # 没有依赖，直接就绪
-        if task_id not in dep_map:
-            ready.append(task)
-            continue
-
-        # 检查所有依赖是否满足
-        all_deps_met = True
-        for from_task, condition in dep_map[task_id]:
-            if from_task not in completed_ids:
-                all_deps_met = False
-                break
-            # 依赖已完成，但需要标记条件（条件评估在 dispatch 中进行）
-            task["_pending_condition"] = {
-                "from_task": from_task,
-                "from_result": task_results.get(from_task, ""),
-                "condition": condition,
-            }
-
-        if all_deps_met:
-            ready.append(task)
-
-    return ready
-
-
-async def dispatch_ready_tasks(state: AgentState, llm: ChatOpenAI) -> list[Send]:
-    """派发当前就绪的任务"""
-    ready_tasks = get_ready_tasks(state)
-
-    if not ready_tasks:
-        return []
-
-    sends = []
-    for task in ready_tasks:
-        # 检查是否有待评估的条件
-        pending_condition = task.get("_pending_condition")
-        if pending_condition:
-            condition_met = await evaluate_condition(
-                llm,
-                pending_condition["from_result"],
-                pending_condition["condition"],
-            )
-            if not condition_met:
-                logger.info("子任务 %s 条件不满足，跳过: %s", task["id"], pending_condition["condition"])
-                # 标记为已完成（跳过），结果为空
-                sends.append(Send("collect_results", {
-                    "task_results": {task["id"]: f"[条件不满足，已跳过: {pending_condition['condition']}]"},
-                    "completed_task_ids": [task["id"]],
-                }))
-                continue
-
-        # 路由到目标 Agent
-        agent_name = await classify_subtask(llm, task["description"])
-        logger.info("子任务 %s → %s", task["id"], agent_name)
-
-        # 将任务ID和依赖结果注入到消息中
-        task_context = f"[任务ID: {task['id']}] {task['description']}"
-
-        sends.append(Send(agent_name, {
-            "messages": [HumanMessage(content=task_context)],
-            "current_agent": agent_name,
-            "_current_task_id": task["id"],
-        }))
-
-    return sends
-
-
-def collect_results(state: AgentState) -> dict[str, Any]:
-    """收集任务执行结果，标记已完成"""
-    # 这个节点主要起汇聚作用
-    # task_results 和 completed_task_ids 通过 reducer 自动合并
-    return {}
-
-
-def check_more_tasks(state: AgentState) -> str:
-    """检查是否还有更多任务需要执行"""
-    sub_tasks = state.get("sub_tasks", [])
-    completed_ids = set(state.get("completed_task_ids", []))
-
-    all_done = all(t["id"] in completed_ids for t in sub_tasks)
-
-    if all_done:
-        return "compliance_check"
-    else:
-        return "dispatch_ready_tasks"
-
-
-# ─── Agent 包装函数（支持依赖模式下的 task_id 结果存储） ───
-
-def make_agent_wrapper(agent_process_fn):
-    """包装 Agent 的 process 方法，在依赖模式下将结果存入 task_results[task_id]"""
-
-    async def wrapped_process(state: dict[str, Any]) -> dict[str, Any]:
-        task_id = state.get("_current_task_id")
-        result = await agent_process_fn(state)
-
-        if task_id:
-            # 从 sub_results 中提取该 Agent 的结果
-            agent_result = None
-            for key, value in result.get("sub_results", {}).items():
-                if isinstance(value, str) and value.strip():
-                    agent_result = value
-                    break
-
-            if agent_result:
-                return {
-                    **result,
-                    "task_results": {task_id: agent_result},
-                    "completed_task_ids": [task_id],
-                }
-
-        return result
-
-    return wrapped_process
-
-
 # ─── 构建Graph ───
 
 def create_supervisor_graph(
@@ -477,9 +470,7 @@ def create_supervisor_graph(
     """
     构建Supervisor编排的多Agent StateGraph。
 
-    流程:
-    - 无依赖: supervisor_decompose → dispatch → [Agent] → compliance_check → synthesize
-    - 有依赖: supervisor_decompose → dispatch_ready_tasks → [Agent] → collect → check → loop or compliance_check
+    流程: supervisor_decompose → intent_router → dispatch_step → [Agent] → collect_step → check_more_steps → loop or compliance_check → synthesize
 
     Args:
         llm: 语言模型实例
@@ -501,65 +492,51 @@ def create_supervisor_graph(
 
     graph = StateGraph(AgentState)
 
-    # 添加节点（Agent 节点使用包装函数，支持依赖模式下的 task_id 结果存储）
+    # 添加节点
     graph.add_node("supervisor_decompose", supervisor.decompose)
-    graph.add_node("knowledge_rag", make_agent_wrapper(knowledge_agent.process))
-    graph.add_node("ticket_handler", make_agent_wrapper(ticket_agent.process))
+    graph.add_node("intent_router", lambda state: intent_router_node(state, llm))
+    graph.add_node("dispatch_step", lambda state: {})  # 占位，实际由条件边派发
+    graph.add_node("knowledge_rag", knowledge_agent.process)
+    graph.add_node("ticket_handler", ticket_agent.process)
+    graph.add_node("collect_step", collect_step)
     graph.add_node("compliance_check", compliance_agent.process)
     graph.add_node("synthesize", supervisor.synthesize_response)
-
-    # 依赖调度相关节点
-    graph.add_node("dispatch_ready_tasks", lambda state: {})  # 占位，实际由条件边派发
-    graph.add_node("collect_results", collect_results)
 
     # 入口
     graph.set_entry_point("supervisor_decompose")
 
-    # supervisor_decompose → 根据模式选择派发方式
-    async def decompose_edge(state: AgentState) -> list[Send]:
-        dispatch_mode = state.get("dispatch_mode", "parallel")
+    # supervisor_decompose → intent_router
+    graph.add_edge("supervisor_decompose", "intent_router")
 
-        if dispatch_mode == "dependent":
-            # 有依赖模式：进入循环调度
-            return [Send("dispatch_ready_tasks", state)]
-        else:
-            # 无依赖模式：一次派发所有任务
-            return await dispatch(state, llm)
+    # intent_router → dispatch_step
+    graph.add_edge("intent_router", "dispatch_step")
+
+    # dispatch_step → 派发到对应 Agent
+    async def dispatch_step_edge(state: AgentState) -> list[Send]:
+        return await dispatch_step(state, llm)
 
     graph.add_conditional_edges(
-        "supervisor_decompose",
-        decompose_edge,
+        "dispatch_step",
+        dispatch_step_edge,
     )
 
-    # dispatch_ready_tasks → 派发就绪任务
-    async def dispatch_ready_edge(state: AgentState) -> list[Send]:
-        return await dispatch_ready_tasks(state, llm)
+    # 所有 Agent → collect_step
+    graph.add_edge("knowledge_rag", "collect_step")
+    graph.add_edge("ticket_handler", "collect_step")
+    graph.add_edge("compliance_check", "collect_step")
 
+    # collect_step → check_more_steps
     graph.add_conditional_edges(
-        "dispatch_ready_tasks",
-        dispatch_ready_edge,
-    )
-
-    # 所有 Agent 汇入 collect_results（依赖模式）或 compliance_check（无依赖模式）
-    def agent_next_node(state: AgentState) -> str:
-        if state.get("dispatch_mode") == "dependent":
-            return "collect_results"
-        return "compliance_check"
-
-    graph.add_conditional_edges("knowledge_rag", agent_next_node)
-    graph.add_conditional_edges("ticket_handler", agent_next_node)
-
-    # collect_results → check_more_tasks
-    graph.add_conditional_edges(
-        "collect_results",
-        check_more_tasks,
+        "collect_step",
+        check_more_steps,
         {
-            "dispatch_ready_tasks": "dispatch_ready_tasks",
+            "dispatch_step": "dispatch_step",
+            "intent_router": "intent_router",
             "compliance_check": "compliance_check",
         },
     )
 
-    # 合规 → 汇总 → 结束
+    # compliance_check → synthesize → END
     graph.add_edge("compliance_check", "synthesize")
     graph.add_edge("synthesize", END)
 

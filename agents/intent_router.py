@@ -1,101 +1,114 @@
 """
-意图路由Agent — 用户意图识别与分类
-负责分析用户输入，识别出具体的业务意图，为Supervisor提供路由依据。
-支持多级意图分类：一级意图(咨询/投诉/办理) -> 二级意图(具体业务)。
+意图路由Agent — 用户意图识别与分类 + 执行链路规划
+负责分析子任务，识别业务意图，规划执行链路（Agent调用顺序）。
+支持多级意图分类和链路规划。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
+import logging
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
 
 from tracing.otel_config import trace_agent_call
 
-
-class IntentCategory(str, Enum):
-    """一级意图分类"""
-    CONSULTATION = "consultation"       # 咨询类
-    COMPLAINT = "complaint"             # 投诉类
-    TRANSACTION = "transaction"         # 交易/办理类
-    ACCOUNT = "account"                 # 账户类
-    COMPLIANCE = "compliance"           # 合规相关
-    UNKNOWN = "unknown"
+logger = logging.getLogger(__name__)
 
 
-@dataclass
-class IntentResult:
-    """意图识别结果"""
-    primary_intent: IntentCategory
-    secondary_intent: str
-    confidence: float
-    entities: dict[str, str]
-    suggested_agent: str
+# ─── Pydantic Model ───
+
+class IntentRouterOutput(BaseModel):
+    """意图路由的结构化输出"""
+    primary_intent: str = Field(
+        description="一级意图: consultation(咨询), complaint(投诉), transaction(交易办理), account(账户), compliance(合规)"
+    )
+    secondary_intent: str = Field(
+        description="二级意图: product_inquiry, refund, order_query, account_open, ..."
+    )
+    confidence: float = Field(description="置信度 0.0-1.0")
+    entities: dict[str, str] = Field(
+        description="提取的实体，如订单号、产品名、金额",
+        default_factory=dict,
+    )
+    agent_chain: list[str] = Field(
+        description="执行链路，按顺序排列的Agent列表。"
+                    "可用Agent: knowledge_rag, ticket_handler, compliance_checker"
+    )
 
 
-INTENT_SYSTEM_PROMPT = """你是一个专业的意图识别Agent，负责分析用户的客服消息。
+# ─── Prompt ───
 
-请从以下维度分析用户意图：
-1. 一级意图分类: consultation(咨询), complaint(投诉), transaction(交易办理), account(账户), compliance(合规)
-2. 二级意图: 具体的业务子类型
-3. 置信度: 0.0-1.0
-4. 关键实体: 提取订单号、产品名、金额等关键信息
-5. 建议路由: knowledge_rag(知识查询), ticket_handler(工单处理), compliance_checker(合规审查)
+INTENT_ROUTER_PROMPT = """你是一个专业的意图路由Agent，负责分析子任务并规划执行链路。
 
-以JSON格式返回，示例：
-{
-    "primary_intent": "consultation",
-    "secondary_intent": "product_inquiry",
-    "confidence": 0.95,
-    "entities": {"product": "理财产品A"},
-    "suggested_agent": "knowledge_rag"
-}
+你的职责：
+1. 识别子任务的一级意图和二级意图
+2. 提取关键实体（订单号、产品名、金额等）
+3. 规划执行链路 — 决定需要哪些Agent按什么顺序处理
 
-金融场景特殊规则：
-- 涉及资金安全、账户异常、欺诈举报 → compliance_checker
-- 涉及退款、理赔、开户 → ticket_handler
-- 涉及产品咨询、利率查询、政策了解 → knowledge_rag
+可用的Agent：
+- knowledge_rag: 知识库检索（产品咨询、政策查询、流程了解）
+- ticket_handler: 工单处理（退款、理赔、开户、订单查询）
+- compliance_checker: 合规审查（退款合规、金额合规、流程合规）
+
+链路规划规则：
+1. 简单查询（"收益多少"、"怎么退款"、"开户流程"）→ [knowledge_rag]
+2. 需要执行操作（"帮我退款"、"帮我开户"、"查订单"）→ [knowledge_rag, ticket_handler]
+3. 涉及金额操作（"退款10万"、"转账"、"购买"）→ [knowledge_rag, ticket_handler, compliance_checker]
+4. 涉及资金安全（"账户被盗"、"异常交易"、"欺诈"）→ [compliance_checker]
+5. 投诉类（"投诉"、"服务态度"）→ [ticket_handler, compliance_checker]
+
+链路中的Agent会按顺序执行，每一步都能看到前面所有步骤的结果。
+请根据子任务的复杂度选择合适的链路长度。
+
+金融场景示例：
+- "理财产品A收益多少" → agent_chain: ["knowledge_rag"]
+- "帮我退款" → agent_chain: ["knowledge_rag", "ticket_handler"]
+- "退款10万" → agent_chain: ["knowledge_rag", "ticket_handler", "compliance_checker"]
+- "账户被盗了" → agent_chain: ["compliance_checker"]
 """
 
 
+# ─── IntentRouterAgent ───
+
 class IntentRouterAgent:
-    """意图路由Agent"""
+    """意图路由Agent — 分析意图 + 规划执行链路"""
 
     def __init__(self, llm: ChatOpenAI):
         self.llm = llm
+        self.llm_with_structure = llm.with_structured_output(IntentRouterOutput)
 
     @trace_agent_call("intent_router")
-    async def classify(self, user_message: str) -> IntentResult:
-        """对用户消息进行意图分类"""
+    async def classify(self, subtask_description: str, context: str = "") -> IntentRouterOutput:
+        """对子任务进行意图分类并规划执行链路"""
         messages = [
-            SystemMessage(content=INTENT_SYSTEM_PROMPT),
-            HumanMessage(content=f"用户消息: {user_message}"),
+            SystemMessage(content=INTENT_ROUTER_PROMPT),
         ]
 
-        response = await self.llm.ainvoke(messages)
+        if context:
+            messages.append(SystemMessage(content=f"上下文信息: {context}"))
 
-        import json
-        try:
-            result = json.loads(response.content)
-        except json.JSONDecodeError:
-            result = {
-                "primary_intent": "unknown",
-                "secondary_intent": "unknown",
-                "confidence": 0.0,
-                "entities": {},
-                "suggested_agent": "knowledge_rag",
-            }
+        messages.append(HumanMessage(content=f"子任务: {subtask_description}"))
 
-        return IntentResult(
-            primary_intent=IntentCategory(result.get("primary_intent", "unknown")),
-            secondary_intent=result.get("secondary_intent", "unknown"),
-            confidence=result.get("confidence", 0.0),
-            entities=result.get("entities", {}),
-            suggested_agent=result.get("suggested_agent", "knowledge_rag"),
+        output: IntentRouterOutput = await self.llm_with_structure.ainvoke(messages)
+
+        # 校验 agent_chain 中的 Agent 名称
+        valid_agents = {"knowledge_rag", "ticket_handler", "compliance_checker"}
+        output.agent_chain = [a for a in output.agent_chain if a in valid_agents]
+
+        # 兜底：如果链路为空，默认使用 knowledge_rag
+        if not output.agent_chain:
+            output.agent_chain = ["knowledge_rag"]
+
+        logger.info(
+            "意图路由: %s → %s, 链路=%s, 置信度=%.2f",
+            subtask_description[:30], output.primary_intent,
+            output.agent_chain, output.confidence,
         )
+
+        return output
 
     @trace_agent_call("intent_router_process")
     async def process(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -108,15 +121,15 @@ class IntentRouterAgent:
         intent_result = await self.classify(last_message)
 
         return {
-            **state,
-            "intent": intent_result.suggested_agent,
+            "intent": intent_result.primary_intent,
             "sub_results": {
                 **state.get("sub_results", {}),
                 "intent_router": {
-                    "primary": intent_result.primary_intent.value,
+                    "primary": intent_result.primary_intent,
                     "secondary": intent_result.secondary_intent,
                     "confidence": intent_result.confidence,
                     "entities": intent_result.entities,
+                    "agent_chain": intent_result.agent_chain,
                 },
             },
         }

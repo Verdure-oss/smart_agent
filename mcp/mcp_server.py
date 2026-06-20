@@ -190,9 +190,10 @@ class MCPToolServer:
         ]
 
 
-def create_default_tools(server: MCPToolServer) -> MCPToolServer:
+def create_default_tools(server: MCPToolServer, long_term_memory=None) -> MCPToolServer:
     """注册默认的MCP工具集"""
-    # 用 装饰器（decorator）把函数注册成一个“可被 Agent 调用的工具”
+    from database import db
+
     @server.register(
         name="order_query",
         description="查询订单信息，支持按订单号或用户ID查询",
@@ -206,13 +207,15 @@ def create_default_tools(server: MCPToolServer) -> MCPToolServer:
         category="order",
     )
     async def order_query(order_id: str = "", user_id: str = "") -> dict:
-        return {
-            "order_id": order_id or "ORD-20260401-001",
-            "status": "shipped",
-            "amount": 299.00,
-            "product": "智能理财产品A",
-            "created_at": "2026-04-01T10:00:00",
-        }
+        if order_id:
+            order = db.query_order(order_id)
+            if order:
+                return order
+            return {"error": f"未找到订单 {order_id}"}
+        elif user_id:
+            orders = db.query_orders_by_user(user_id)
+            return {"orders": orders, "total": len(orders)}
+        return {"error": "请提供订单号或用户ID"}
 
     @server.register(
         name="knowledge_search",
@@ -228,9 +231,11 @@ def create_default_tools(server: MCPToolServer) -> MCPToolServer:
         category="knowledge",
     )
     async def knowledge_search(query: str, top_k: int = 3) -> list[dict]:
-        return [
-            {"content": f"关于'{query}'的知识库文档片段", "source": "FAQ.md", "score": 0.95},
-        ]
+        # 使用FAISS向量检索（不是SQLite）
+        if long_term_memory:
+            docs = long_term_memory.search(query, top_k=top_k)
+            return docs if docs else [{"content": f"未找到关于'{query}'的相关文档", "source": "无"}]
+        return [{"content": f"知识库未初始化", "source": "无"}]
 
     @server.register(
         name="ticket_create",
@@ -238,28 +243,28 @@ def create_default_tools(server: MCPToolServer) -> MCPToolServer:
         input_schema={
             "type": "object",
             "properties": {
-                "title": {"type": "string"},
-                "description": {"type": "string"},
-                "priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"]},
-                "category": {"type": "string"},
+                "user_id": {"type": "string", "description": "用户ID"},
+                "ticket_type": {"type": "string", "description": "工单类型: refund/claim/account_open/complaint/general"},
+                "summary": {"type": "string", "description": "工单摘要"},
+                "details": {"type": "string", "description": "详细描述"},
+                "priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"], "default": "medium"},
+                "order_id": {"type": "string", "description": "关联订单号（可选）"},
             },
-            "required": ["title", "description"],
+            "required": ["user_id", "ticket_type", "summary"],
         },
         category="ticket",
     )
-    async def ticket_create(title: str, description: str, priority: str = "medium", category: str = "general") -> dict:
-        import uuid
-        return {
-            "ticket_id": f"TK-{uuid.uuid4().hex[:8].upper()}",
-            "title": title,
-            "status": "created",
-            "priority": priority,
-        }
+    async def ticket_create(user_id: str, ticket_type: str, summary: str, details: str = "", priority: str = "medium", order_id: str = "") -> dict:
+        ticket = db.create_ticket(
+            user_id=user_id,
+            ticket_type=ticket_type,
+            priority=priority,
+            summary=summary,
+            details=details,
+            order_id=order_id or None,
+        )
+        return ticket
 
-    # 把函数本身 
-    # 连同工具名、描述、input_schema
-    # 一起封装成 ToolDefinition
-    # 放进 self._tools[name]
     @server.register(
         name="risk_check",
         description="风控接口 — 检查交易/操作的风险等级",

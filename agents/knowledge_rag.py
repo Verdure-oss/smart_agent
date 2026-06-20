@@ -44,9 +44,10 @@ QUERY_REWRITE_PROMPT = """请将用户的口语化问题改写为更适合向量
 class KnowledgeRAGAgent:
     """知识检索Agent - 实现完整RAG流程"""
 
-    def __init__(self, llm: ChatOpenAI, long_term_memory: LongTermMemory | None = None):
+    def __init__(self, llm: ChatOpenAI, long_term_memory: LongTermMemory | None = None, mcp_server=None):
         self.llm = llm
         self.long_term_memory = long_term_memory or LongTermMemory()
+        self.mcp_server = mcp_server
 
     @trace_agent_call("rag_query_rewrite")
     async def rewrite_query(self, original_query: str) -> str:
@@ -62,10 +63,27 @@ class KnowledgeRAGAgent:
 
     @trace_agent_call("rag_retrieve")
     async def retrieve_documents(self, query: str, top_k: int = 5) -> list[dict]:
-        """从向量数据库检索相关文档"""
+        """从向量数据库检索相关文档（优先使用MCP工具）"""
         logger.info("[RAG] Step 2/4: 向量检索 — 查询: %s, top_k=%d", query[:50], top_k)
+
+        # 优先通过MCP工具搜索知识库
+        if self.mcp_server:
+            logger.info("[RAG] Step 2/4: 调用MCP工具 knowledge_search")
+            result = await self.mcp_server.call_tool("knowledge_search", {
+                "query": query,
+                "top_k": top_k,
+            })
+            if result.success and result.result:
+                docs = result.result
+                logger.info("[RAG] Step 2/4: MCP工具返回 %d 个文档", len(docs))
+                return docs
+            else:
+                logger.warning("[RAG] Step 2/4: MCP工具调用失败: %s", result.error)
+
+        # 兜底：使用FAISS向量检索
+        logger.info("[RAG] Step 2/4: 使用FAISS向量检索")
         docs = self.long_term_memory.search(query, top_k=top_k)
-        logger.info("[RAG] Step 2/4: 向量检索 — 检索到 %d 个文档", len(docs))
+        logger.info("[RAG] Step 2/4: FAISS检索到 %d 个文档", len(docs))
         return docs
 
     @trace_agent_call("rag_rerank")

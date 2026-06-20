@@ -612,6 +612,7 @@ def create_supervisor_graph(
     working_memory: WorkingMemory | None = None,
     short_term_memory: ShortTermMemory | None = None,
     long_term_memory: LongTermMemory | None = None,
+    mcp_server=None,
     enable_checkpointing: bool = True,
 ) -> StateGraph:
     """
@@ -633,9 +634,9 @@ def create_supervisor_graph(
 
     supervisor = SupervisorNode(llm, working_memory)
 
-    knowledge_agent = KnowledgeRAGAgent(llm, long_term_memory)
-    ticket_agent = TicketHandlerAgent(llm)
-    compliance_agent = ComplianceCheckerAgent(llm)
+    knowledge_agent = KnowledgeRAGAgent(llm, long_term_memory, mcp_server)
+    ticket_agent = TicketHandlerAgent(llm, mcp_server)
+    compliance_agent = ComplianceCheckerAgent(llm, mcp_server)
 
     graph = StateGraph(AgentState)
 

@@ -31,6 +31,7 @@ from memory.short_term import ShortTermMemory
 from memory.long_term import LongTermMemory
 from mcp.mcp_server import MCPToolServer, create_default_tools
 from tracing.otel_config import init_tracer, AgentMetrics
+from database.db import init_db, seed_data
 
 load_dotenv()
 
@@ -38,7 +39,7 @@ load_dotenv()
 working_memory = WorkingMemory()
 short_term_memory = ShortTermMemory(redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"))
 long_term_memory = LongTermMemory(index_path=os.getenv("FAISS_INDEX_PATH", "./vector_store/faiss_index"))
-mcp_server = create_default_tools(MCPToolServer())
+mcp_server = create_default_tools(MCPToolServer(), long_term_memory)
 metrics = AgentMetrics()
 graph = None
 
@@ -58,13 +59,20 @@ async def lifespan(app: FastAPI):
         otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
     )
 
+    # 初始化数据库（订单、工单等业务数据）
+    init_db()
+    seed_data()
+    logging.info("数据库初始化完成")
+
     # 初始化多 Agent 系统
     graph = create_supervisor_graph(
         working_memory=working_memory,
         short_term_memory=short_term_memory,
         long_term_memory=long_term_memory,
+        mcp_server=mcp_server,
     )
 
+    # 知识库数据（FAISS向量存储）
     long_term_memory.add_document(
         content="我们的理财产品A年化收益率为3.5%-5.2%，投资期限为6个月至3年，最低投资金额10000元。注意：理财非存款，产品有风险，投资须谨慎。",
         source="product_faq.md",
@@ -77,6 +85,7 @@ async def lifespan(app: FastAPI):
         content="开户流程：1.准备身份证原件 2.填写开户申请表 3.进行视频认证 4.设置交易密码 5.完成风险评估问卷。整个流程约需15-30分钟。",
         source="account_guide.md",
     )
+    logging.info("知识库初始化完成")
 
     yield
 

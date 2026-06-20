@@ -67,8 +67,9 @@ COMPLIANCE_SYSTEM_PROMPT = """你是一个金融合规审查Agent，负责审查
 class ComplianceCheckerAgent:
     """合规审查Agent"""
 
-    def __init__(self, llm: ChatOpenAI):
+    def __init__(self, llm: ChatOpenAI, mcp_server=None):
         self.llm = llm
+        self.mcp_server = mcp_server
 
     def _rule_based_check(self, content: str) -> list[str]:
         """基于规则的快速检查（不依赖LLM，低延迟）"""
@@ -189,10 +190,28 @@ class ComplianceCheckerAgent:
             sanitized_content=rule_result.sanitized_content,
         )
 
+    @trace_agent_call("risk_check")
+    async def check_risk(self, user_id: str, action: str, amount: float = 0.0) -> dict:
+        """通过MCP工具进行风控检查"""
+        if self.mcp_server:
+            logger.info("[合规] 调用MCP工具 risk_check: user=%s, action=%s", user_id, action)
+            result = await self.mcp_server.call_tool("risk_check", {
+                "user_id": user_id,
+                "action": action,
+                "amount": amount,
+            })
+            if result.success:
+                logger.info("[合规] MCP工具风控结果: %s", result.result)
+                return result.result
+            else:
+                logger.warning("[合规] MCP工具调用失败: %s", result.error)
+        return {"risk_level": "unknown", "requires_manual_review": False}
+
     @trace_agent_call("compliance_process")
     async def process(self, state: dict[str, Any]) -> dict[str, Any]:
         """作为Graph节点处理状态"""
         sub_results = state.get("sub_results", {})
+        user_id = state.get("user_id", "anonymous")
 
         content_to_check = ""
         for agent_name, result in sub_results.items():
@@ -201,6 +220,10 @@ class ComplianceCheckerAgent:
 
         if not content_to_check.strip():
             return {**state, "compliance_passed": True}
+
+        # 通过MCP工具进行风控检查
+        risk_result = await self.check_risk(user_id, "chat_response")
+        logger.info("[合规] 风控检查结果: %s", risk_result)
 
         compliance_result = await self.full_check(content_to_check)
 

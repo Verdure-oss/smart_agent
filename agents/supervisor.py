@@ -246,7 +246,10 @@ class SupervisorNode:
             )
         else:
             result_parts = []
+            # 只使用汇总结果（task_id 为 key），跳过步骤级别结果（含 _step_）
             for key, result in task_results.items():
+                if "_step_" in key:
+                    continue
                 if isinstance(result, str) and result.strip():
                     result_parts.append(result)
             final_response = "\n\n".join(result_parts) if result_parts else "抱歉，暂时无法处理您的请求，请稍后重试。"
@@ -494,7 +497,10 @@ def create_supervisor_graph(
 
     # 添加节点
     graph.add_node("supervisor_decompose", supervisor.decompose)
-    graph.add_node("intent_router", lambda state: intent_router_node(state, llm))
+    async def intent_router_edge(state: AgentState) -> dict[str, Any]:
+        return await intent_router_node(state, llm)
+
+    graph.add_node("intent_router", intent_router_edge)
     graph.add_node("dispatch_step", lambda state: {})  # 占位，实际由条件边派发
     graph.add_node("knowledge_rag", knowledge_agent.process)
     graph.add_node("ticket_handler", ticket_agent.process)
@@ -520,10 +526,9 @@ def create_supervisor_graph(
         dispatch_step_edge,
     )
 
-    # 所有 Agent → collect_step
+    # 业务 Agent → collect_step（继续循环）
     graph.add_edge("knowledge_rag", "collect_step")
     graph.add_edge("ticket_handler", "collect_step")
-    graph.add_edge("compliance_check", "collect_step")
 
     # collect_step → check_more_steps
     graph.add_conditional_edges(

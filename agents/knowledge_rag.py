@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -13,6 +14,8 @@ from langchain_openai import ChatOpenAI
 
 from memory.long_term import LongTermMemory
 from tracing.otel_config import trace_agent_call
+
+logger = logging.getLogger(__name__)
 
 
 RAG_SYSTEM_PROMPT = """你是一个专业的知识库问答Agent，负责根据检索到的文档回答用户问题。
@@ -48,16 +51,21 @@ class KnowledgeRAGAgent:
     @trace_agent_call("rag_query_rewrite")
     async def rewrite_query(self, original_query: str) -> str:
         """Query改写：将口语化问题转为检索友好的查询"""
+        logger.info("[RAG] Step 1/4: Query改写 — 原始查询: %s", original_query[:50])
         messages = [
             HumanMessage(content=QUERY_REWRITE_PROMPT.format(query=original_query)),
         ]
         response = await self.llm.ainvoke(messages)
-        return response.content.strip()
+        rewritten = response.content.strip()
+        logger.info("[RAG] Step 1/4: Query改写 — 改写结果: %s", rewritten[:50])
+        return rewritten
 
     @trace_agent_call("rag_retrieve")
     async def retrieve_documents(self, query: str, top_k: int = 5) -> list[dict]:
         """从向量数据库检索相关文档"""
+        logger.info("[RAG] Step 2/4: 向量检索 — 查询: %s, top_k=%d", query[:50], top_k)
         docs = self.long_term_memory.search(query, top_k=top_k)
+        logger.info("[RAG] Step 2/4: 向量检索 — 检索到 %d 个文档", len(docs))
         return docs
 
     @trace_agent_call("rag_rerank")
@@ -66,8 +74,10 @@ class KnowledgeRAGAgent:
     ) -> list[dict]:
         """对检索结果重排序，提升相关性"""
         if not documents:
+            logger.info("[RAG] Step 3/4: 文档重排序 — 无文档，跳过")
             return []
 
+        logger.info("[RAG] Step 3/4: 文档重排序 — 对 %d 个文档重排序", len(documents))
         doc_summaries = "\n".join(
             f"[{i}] {doc.get('content', '')[:200]}"
             for i, doc in enumerate(documents)
@@ -90,11 +100,13 @@ class KnowledgeRAGAgent:
         except (ValueError, IndexError):
             reranked = documents[:top_k]
 
+        logger.info("[RAG] Step 3/4: 文档重排序 — 选出 %d 个文档", len(reranked))
         return reranked
 
     @trace_agent_call("rag_generate")
     async def generate_answer(self, query: str, context_docs: list[dict]) -> str:
         """基于检索文档生成回答"""
+        logger.info("[RAG] Step 4/4: 生成回答 — 基于 %d 个文档生成", len(context_docs))
         if not context_docs:
             return "抱歉，知识库中暂未找到与您问题相关的信息。建议您联系人工客服获取帮助。"
 

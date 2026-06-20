@@ -4,10 +4,18 @@ FastAPI入口 — 提供REST API + SSE流式响应
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+
+# 配置日志输出到控制台
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request

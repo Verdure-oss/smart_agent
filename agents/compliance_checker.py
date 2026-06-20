@@ -9,9 +9,12 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -100,8 +103,10 @@ class ComplianceCheckerAgent:
     @trace_agent_call("compliance_rule_check")
     async def rule_check(self, content: str) -> ComplianceResult:
         """规则引擎快速检查"""
+        logger.info("[合规] 阶段1: 规则引擎检查 — 检测PII和敏感词")
         violations = self._rule_based_check(content)
         sanitized = self._mask_pii(content)
+        logger.info("[合规] 阶段1: 规则引擎检查 — 发现 %d 个违规", len(violations))
 
         if not violations:
             return ComplianceResult(
@@ -130,12 +135,14 @@ class ComplianceCheckerAgent:
     @trace_agent_call("compliance_llm_check")
     async def llm_check(self, content: str) -> ComplianceResult:
         """LLM深度合规审查（处理规则引擎无法覆盖的场景）"""
+        logger.info("[合规] 阶段2: LLM深度审查 — 分析内容合规性")
         messages = [
             SystemMessage(content=COMPLIANCE_SYSTEM_PROMPT),
             HumanMessage(content=f"请审查以下客服回复内容的合规性：\n\n{content}"),
         ]
 
         response = await self.llm.ainvoke(messages)
+        logger.info("[合规] 阶段2: LLM深度审查 — 完成")
 
         import json
         try:

@@ -201,6 +201,9 @@ def seed_data() -> None:
             ("ORD-20260620-001", "user_001", "理财产品A", 50000.0, "completed"),
             ("ORD-20260620-002", "user_001", "理财产品B", 100000.0, "pending"),
             ("ORD-20260620-003", "user_002", "智能存款C", 200000.0, "completed"),
+            ("ORD-20260620-004", "demo-user", "理财产品A", 30000.0, "completed"),
+            ("ORD-20260620-005", "demo-user", "智能存款C", 80000.0, "completed"),
+            ("ORD-20260620-006", "demo-user", "理财产品B", 150000.0, "pending"),
         ]
         conn.executemany(
             "INSERT OR IGNORE INTO orders (order_id, user_id, product, amount, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",

@@ -16,4 +16,4 @@ mcp>=1.0.0
 httpx>=0.28.0
 python-dotenv>=1.0.0
 tiktoken>=0.8.0
-# numpy>=1.26.0
+# numpy>=1.26.0  然后这里创建工单是不是又具体执行的过程，比如购买10万元理财产品a这些，可以具体调用ticket agent执行吗

@@ -469,6 +469,8 @@ async def dispatch_step(state: AgentState, llm: ChatOpenAI) -> list[Send]:
         "messages": [HumanMessage(content=context)],
         "current_agent": graph_node_name,
         "_last_dispatched_agent": graph_node_name,
+        "user_id": state.get("user_id", "anonymous"),
+        "session_id": state.get("session_id", ""),
     })]
 
 

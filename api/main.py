@@ -161,6 +161,7 @@ async def chat(request: ChatRequest):
         "current_step_index": 0,
         "task_results": {},
         "completed_task_ids": [],
+        "_last_dispatched_agent": "",
     }
 
     config = {"configurable": {"thread_id": session_id}}

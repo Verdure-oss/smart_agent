@@ -84,6 +84,7 @@ class AgentState(TypedDict):
     final_response: str
     current_agent: str
     retry_count: int
+    _last_dispatched_agent: str
 
     # 子任务相关
     sub_tasks: list[dict[str, Any]]
@@ -342,6 +343,7 @@ async def dispatch_step(state: AgentState, llm: ChatOpenAI) -> list[Send]:
     return [Send(agent_name, {
         "messages": [HumanMessage(content=context)],
         "current_agent": agent_name,
+        "_last_dispatched_agent": agent_name,
     })]
 
 
@@ -381,14 +383,25 @@ def collect_step(state: AgentState) -> dict[str, Any]:
     sub_results = state.get("sub_results", {})
 
     if not current_task_id:
+        logger.warning("[collect_step] current_sub_task_id 为空，跳过")
         return {}
 
-    # 从 sub_results 中提取当前 Agent 的结果
+    logger.info("[collect_step] 收集 %s 步骤 %d 的结果", current_task_id, current_step)
+
+    # 精确提取当前 Agent 的结果（避免累积的 sub_results 干扰）
+    last_agent = state.get("_last_dispatched_agent", "")
     agent_result = ""
-    for key, value in sub_results.items():
-        if isinstance(value, str) and value.strip():
-            agent_result = value
-            break
+    logger.info("[collect_step] last_agent=%s, sub_results keys=%s", last_agent, list(sub_results.keys()))
+    if last_agent and last_agent in sub_results:
+        agent_result = sub_results[last_agent]
+        logger.info("[collect_step] 从 %s 提取结果: %s", last_agent, agent_result[:50])
+    else:
+        # 兜底：取第一个 string 类型的值
+        for key, value in sub_results.items():
+            if isinstance(value, str) and value.strip():
+                agent_result = value
+                logger.info("[collect_step] 兜底从 %s 提取结果: %s", key, agent_result[:50])
+                break
 
     chain = task_chains.get(current_task_id, [])
     step_key = f"{current_task_id}_step_{current_step}"
@@ -425,23 +438,29 @@ def check_more_steps(state: AgentState) -> str:
     completed_ids = set(state.get("completed_task_ids", []))
     dependencies = state.get("dependencies", [])
 
+    logger.info(
+        "[check_more_steps] current_task=%s, step=%d, completed=%s, sub_tasks=%s",
+        current_task_id, current_step, completed_ids, [t["id"] for t in sub_tasks],
+    )
+
     # 当前链路还有步骤
     if current_task_id and current_task_id in task_chains:
         chain = task_chains[current_task_id]
         if current_step < len(chain):
+            logger.info("[check_more_steps] → dispatch_step (链路还有步骤)")
             return "dispatch_step"
 
     # 还有子任务未执行
     for task in sub_tasks:
         if task["id"] not in completed_ids:
             if _check_dependencies_met(task["id"], dependencies, completed_ids):
+                logger.info("[check_more_steps] → intent_router (还有子任务 %s)", task["id"])
                 return "intent_router"
 
     # 检查依赖模式下是否有任务需要条件评估
     if dependencies:
         for task in sub_tasks:
             if task["id"] not in completed_ids:
-                # 有未完成的任务，但依赖未满足 → 跳过
                 logger.info("子任务 %s 依赖未满足，跳过", task["id"])
 
     # 全部完成

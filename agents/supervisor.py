@@ -57,7 +57,8 @@ class SupervisorOutput(BaseModel):
         default_factory=list,
     )
     needs_parallel: bool = Field(
-        description="子任务之间是否可以并行执行。无依赖时为 true，有依赖时为 false"
+        description="子任务之间是否可以并行执行。无依赖时为 true，有依赖时为 false",
+        default=True,
     )
     is_supplementary: bool = Field(
         description="当前消息是否是对之前请求的补充信息（如提供订单号、确认操作等）",
@@ -350,15 +351,21 @@ async def intent_router_node(state: AgentState, llm: ChatOpenAI) -> dict[str, An
     completed_ids = set(state.get("completed_task_ids", []))
     task_chains = dict(state.get("task_chains", {}))
     dependencies = state.get("dependencies", [])
+    task_results = state.get("task_results", {})
     is_supplementary = state.get("dispatch_mode") == "chain" and state.get("is_supplementary", False)
     logger.info("[intent_router] is_supplementary=%s, sub_tasks=%s", is_supplementary, [t["id"] for t in sub_tasks])
 
     # 找到下一个未完成的子任务
     next_task = None
+    logger.info("[intent_router] dependencies=%s, completed_ids=%s", dependencies, completed_ids)
     for task in sub_tasks:
         if task["id"] not in completed_ids:
-            # 检查依赖是否满足
-            if _check_dependencies_met(task["id"], dependencies, completed_ids):
+            # 检查依赖是否满足（包括条件评估）
+            dep_met = await _check_dependencies_met(
+                task["id"], dependencies, completed_ids, task_results, llm
+            )
+            logger.info("[intent_router] task %s: dep_met=%s", task["id"], dep_met)
+            if dep_met:
                 next_task = task
                 break
 
@@ -392,13 +399,41 @@ async def intent_router_node(state: AgentState, llm: ChatOpenAI) -> dict[str, An
     }
 
 
-def _check_dependencies_met(task_id: str, dependencies: list[dict], completed_ids: set[str]) -> bool:
-    """检查任务的所有依赖是否已满足"""
-    for dep in dependencies:
-        if dep["to_task"] == task_id:
-            if dep["from_task"] not in completed_ids:
-                return False
-    return True
+async def _check_dependencies_met(
+    task_id: str,
+    dependencies: list[dict],
+    completed_ids: set[str],
+    task_results: dict[str, Any],
+    llm: ChatOpenAI,
+) -> bool:
+    """检查任务的所有依赖是否已满足（包括条件评估）"""
+    try:
+        for dep in dependencies:
+            if dep["to_task"] == task_id:
+                from_task = dep["from_task"]
+                condition = dep.get("condition", "")
+
+                # 检查前置任务是否完成
+                if from_task not in completed_ids:
+                    logger.info("[依赖检查] task_%s 依赖 task_%s 未完成", task_id, from_task)
+                    return False
+
+                # 如果有条件，评估条件是否满足
+                if condition:
+                    from_result = task_results.get(from_task, "")
+                    if not from_result:
+                        logger.info("[依赖检查] task_%s 的前置任务结果为空", task_id)
+                        return False
+
+                    condition_met = await evaluate_condition(llm, from_result, condition)
+                    logger.info("[依赖检查] task_%s 条件评估: '%s' → %s", task_id, condition, condition_met)
+                    if not condition_met:
+                        return False
+
+        return True
+    except Exception as e:
+        logger.error("[依赖检查] task_%s 异常: %s", task_id, e)
+        return False
 
 
 # ─── 链路执行引擎 ───
@@ -519,7 +554,7 @@ def collect_step(state: AgentState) -> dict[str, Any]:
     return result
 
 
-def check_more_steps(state: AgentState) -> str:
+async def check_more_steps(state: AgentState, llm: ChatOpenAI) -> str:
     """检查是否还有更多步骤或子任务需要执行"""
     task_chains = state.get("task_chains", {})
     current_task_id = state.get("current_sub_task_id", "")
@@ -527,6 +562,7 @@ def check_more_steps(state: AgentState) -> str:
     sub_tasks = state.get("sub_tasks", [])
     completed_ids = set(state.get("completed_task_ids", []))
     dependencies = state.get("dependencies", [])
+    task_results = state.get("task_results", {})
 
     logger.info(
         "[check_more_steps] current_task=%s, step=%d, completed=%s, sub_tasks=%s",
@@ -540,18 +576,17 @@ def check_more_steps(state: AgentState) -> str:
             logger.info("[check_more_steps] → dispatch_step (链路还有步骤)")
             return "dispatch_step"
 
-    # 还有子任务未执行
+    # 还有子任务未执行（需要检查依赖条件）
     for task in sub_tasks:
         if task["id"] not in completed_ids:
-            if _check_dependencies_met(task["id"], dependencies, completed_ids):
+            dep_met = await _check_dependencies_met(
+                task["id"], dependencies, completed_ids, task_results, llm
+            )
+            if dep_met:
                 logger.info("[check_more_steps] → intent_router (还有子任务 %s)", task["id"])
                 return "intent_router"
-
-    # 检查依赖模式下是否有任务需要条件评估
-    if dependencies:
-        for task in sub_tasks:
-            if task["id"] not in completed_ids:
-                logger.info("子任务 %s 依赖未满足，跳过", task["id"])
+            else:
+                logger.info("[check_more_steps] 子任务 %s 依赖条件不满足，跳过", task["id"])
 
     # 全部完成
     return "compliance_check"
@@ -640,9 +675,12 @@ def create_supervisor_graph(
     graph.add_edge("ticket_handler", "collect_step")
 
     # collect_step → check_more_steps
+    async def check_more_steps_edge(state: AgentState) -> str:
+        return await check_more_steps(state, llm)
+
     graph.add_conditional_edges(
         "collect_step",
-        check_more_steps,
+        check_more_steps_edge,
         {
             "dispatch_step": "dispatch_step",
             "intent_router": "intent_router",

@@ -177,7 +177,10 @@ async def chat(request: ChatRequest):
         "_last_dispatched_agent": "",
     }
 
-    config = {"configurable": {"thread_id": session_id}}
+    # 使用唯一 thread_id，避免状态跨请求持久化
+    # completed_ids、task_results 等不应该跨请求保留
+    thread_id = f"{session_id}-{uuid.uuid4()}"
+    config = {"configurable": {"thread_id": thread_id}}
 
     try:
         # 触发整个多 Agent 流程执行（异步运行图 graph）

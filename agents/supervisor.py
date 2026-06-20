@@ -59,6 +59,14 @@ class SupervisorOutput(BaseModel):
     needs_parallel: bool = Field(
         description="子任务之间是否可以并行执行。无依赖时为 true，有依赖时为 false"
     )
+    is_supplementary: bool = Field(
+        description="当前消息是否是对之前请求的补充信息（如提供订单号、确认操作等）",
+        default=False,
+    )
+    supplementary_context: str = Field(
+        description="如果是补充信息，说明补充了什么内容（如：提供了订单号123456）",
+        default="",
+    )
 
 
 # ─── 状态定义 ───
@@ -91,6 +99,8 @@ class AgentState(TypedDict):
     dependencies: list[dict[str, Any]]
     needs_parallel: bool
     dispatch_mode: str  # "chain" | "parallel" | "single"
+    is_supplementary: bool
+    supplementary_context: str
 
     # 链路执行相关
     task_chains: Annotated[dict[str, list[str]], merge_dict]
@@ -121,6 +131,13 @@ SUPERVISOR_DECOMPOSE_PROMPT = """你是一个智能客服系统的 Supervisor（
    - "帮我开户" → description 应该是 "帮我开户" 或 "执行开户操作"，不是 "查询开户流程"
    - "查订单TK-001" → description 应该是 "查询订单TK-001的当前状态"
 
+6. 补充信息判断（非常重要）：
+   - 分析对话历史，判断当前消息是否是对之前请求的补充
+   - 如果助手之前要求用户补充信息（如订单号、身份证号），而用户现在提供了，这就是补充信息
+   - 补充信息时：is_supplementary=true，supplementary_context 说明补充了什么
+   - 补充信息时：sub_tasks 应该包含完整的操作（结合之前的请求和现在的补充信息）
+   - 例如：之前"帮我退款"，现在"订单号是123456" → sub_tasks: [{id: "task_1", description: "退款订单123456", entities: {order_id: "123456"}}]
+
 依赖关系说明：
 - 当一个任务的执行依赖于另一个任务的结果时，需要声明依赖
 - 依赖必须附带条件，说明在什么情况下才执行后续任务
@@ -135,6 +152,7 @@ SUPERVISOR_DECOMPOSE_PROMPT = """你是一个智能客服系统的 Supervisor（
   ]
 → dependencies: []
 → needs_parallel: true
+→ is_supplementary: false
 
 用户: "查查理财产品A收益多少，超过5%就帮我买10万"
 → sub_tasks: [
@@ -145,6 +163,7 @@ SUPERVISOR_DECOMPOSE_PROMPT = """你是一个智能客服系统的 Supervisor（
     {from_task: "task_1", to_task: "task_2", condition: "收益率 > 5%"}
   ]
 → needs_parallel: false
+→ is_supplementary: false
 
 用户: "怎么退款"
 → sub_tasks: [
@@ -152,6 +171,16 @@ SUPERVISOR_DECOMPOSE_PROMPT = """你是一个智能客服系统的 Supervisor（
   ]
 → dependencies: []
 → needs_parallel: false
+→ is_supplementary: false
+
+用户: "订单号是123456"（之前助手要求补充订单号）
+→ sub_tasks: [
+    {id: "task_1", description: "退款订单123456", entities: {order_id: "123456"}}
+  ]
+→ dependencies: []
+→ needs_parallel: false
+→ is_supplementary: true
+→ supplementary_context: "用户提供了订单号123456，用于之前的退款请求"
 """
 
 CONDITION_EVAL_PROMPT = """你是一个条件评估Agent。根据前置任务的执行结果，判断是否满足执行后续任务的条件。
@@ -213,15 +242,28 @@ class SupervisorNode:
         else:
             dispatch_mode = "chain"
 
+        # 补充信息时，更新工作记忆
+        if output.is_supplementary:
+            logger.info("Supervisor 检测到补充信息: %s", output.supplementary_context)
+            # 合并之前的上下文
+            prev_context = self.working_memory.get_context(session_id)
+            if "pending_request" in prev_context:
+                # 将补充信息与之前的请求合并
+                for task in sub_tasks:
+                    if not task["entities"]:
+                        task["entities"] = prev_context.get("pending_entities", {})
+
         self.working_memory.update(session_id, {
             "sub_tasks": sub_tasks,
             "dependencies": dependencies,
             "dispatch_mode": dispatch_mode,
+            "is_supplementary": output.is_supplementary,
+            "supplementary_context": output.supplementary_context,
         })
 
         logger.info(
-            "Supervisor 拆解为 %d 个子任务, 模式=%s, 依赖=%d",
-            len(sub_tasks), dispatch_mode, len(dependencies),
+            "Supervisor 拆解为 %d 个子任务, 模式=%s, 依赖=%d, 补充信息=%s",
+            len(sub_tasks), dispatch_mode, len(dependencies), output.is_supplementary,
         )
 
         return {
@@ -236,13 +278,17 @@ class SupervisorNode:
             "completed_task_ids": [],
             "current_sub_task_id": "",
             "current_step_index": 0,
+            "is_supplementary": output.is_supplementary,
+            "supplementary_context": output.supplementary_context,
         }
 
     @trace_agent_call("supervisor_synthesize")
     async def synthesize_response(self, state: AgentState) -> dict[str, Any]:
         """汇总子Agent结果，生成最终回复"""
         task_results = state.get("task_results", {})
+        sub_tasks = state.get("sub_tasks", [])
         compliance_passed = state.get("compliance_passed", True)
+        session_id = state.get("session_id", "default")
 
         if not compliance_passed:
             final_response = (
@@ -259,6 +305,33 @@ class SupervisorNode:
                     result_parts.append(result)
             final_response = "\n\n".join(result_parts) if result_parts else "抱歉，暂时无法处理您的请求，请稍后重试。"
 
+        # 检查是否有需要补充信息的工单，存储到工作记忆
+        has_need_info = any(
+            isinstance(result, str) and "⚠️" in result
+            for result in task_results.values()
+        )
+        if has_need_info:
+            # 存储待处理的请求上下文
+            pending_entities = {}
+            pending_request = ""
+            for task in sub_tasks:
+                pending_entities.update(task.get("entities", {}))
+                pending_request = task.get("description", "")
+
+            self.working_memory.update(session_id, {
+                "pending_request": pending_request,
+                "pending_entities": pending_entities,
+                "awaiting_info": True,
+            })
+            logger.info("工作记忆: 存储待补充信息请求 - %s", pending_request)
+        else:
+            # 清除待补充状态
+            self.working_memory.update(session_id, {
+                "pending_request": "",
+                "pending_entities": {},
+                "awaiting_info": False,
+            })
+
         return {
             "final_response": final_response,
             "messages": [AIMessage(content=final_response)],
@@ -270,12 +343,15 @@ class SupervisorNode:
 @trace_agent_call("intent_router_node")
 async def intent_router_node(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
     """对当前子任务进行意图分类，规划执行链路"""
+    logger.info("[intent_router] 开始执行")
     intent_router = IntentRouterAgent(llm)
 
     sub_tasks = state.get("sub_tasks", [])
     completed_ids = set(state.get("completed_task_ids", []))
     task_chains = dict(state.get("task_chains", {}))
     dependencies = state.get("dependencies", [])
+    is_supplementary = state.get("dispatch_mode") == "chain" and state.get("is_supplementary", False)
+    logger.info("[intent_router] is_supplementary=%s, sub_tasks=%s", is_supplementary, [t["id"] for t in sub_tasks])
 
     # 找到下一个未完成的子任务
     next_task = None
@@ -296,8 +372,12 @@ async def intent_router_node(state: AgentState, llm: ChatOpenAI) -> dict[str, An
     task_id = next_task["id"]
     description = next_task["description"]
 
-    # 意图分类 + 链路规划
-    intent_result = await intent_router.classify(description)
+    # 检查对话历史是否已包含相关信息
+    messages = state.get("messages", [])
+    history_context = "\n".join([msg.content for msg in messages[-5:]])  # 最近5条消息
+
+    # 意图分类 + 链路规划（传入对话历史让 Intent Router 判断是否需要重新检索）
+    intent_result = await intent_router.classify(description, context=history_context)
     chain = intent_result.agent_chain
 
     task_chains[task_id] = chain

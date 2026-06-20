@@ -140,10 +140,23 @@ async def chat(request: ChatRequest):
 
     await short_term_memory.add_message(session_id, "user", request.message)
 
-    from langchain_core.messages import HumanMessage
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    # 获取对话历史，让 Supervisor 能看到之前的上下文
+    history = await short_term_memory.get_history(session_id, last_n=10)
+    messages = []
+    for msg in history:
+        if msg["role"] == "user":
+            messages.append(HumanMessage(content=msg["content"]))
+        elif msg["role"] == "assistant":
+            messages.append(AIMessage(content=msg["content"]))
+
+    # 确保当前消息在最后
+    if not messages or messages[-1].content != request.message:
+        messages.append(HumanMessage(content=request.message))
 
     initial_state = {
-        "messages": [HumanMessage(content=request.message)],
+        "messages": messages,
         "user_id": request.user_id,
         "session_id": session_id,
         "intent": "",

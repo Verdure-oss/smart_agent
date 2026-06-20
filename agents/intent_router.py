@@ -99,10 +99,16 @@ D. 涉及资金安全（只需要 ticket_handler）：
 E. 投诉类（只需要 ticket_handler）：
    - "投诉"、"服务态度"
 
+F. 对话历史已包含相关信息（跳过 knowledge_rag）：
+   - 如果对话历史中已经包含了执行该任务所需的信息（如退款政策、产品信息等）
+   - 则只需要 [ticket_handler]，不需要重复检索
+   - 例如：之前已经查过退款政策，现在用户补充订单号 → 只需要 [ticket_handler]
+
 关键判断（必须严格遵守）：
 - 如果子任务描述包含"执行"、"操作"、"办理"、"帮我" → 必须是 [knowledge_rag, ticket_handler]
 - 如果子任务描述是纯信息查询 → 只需要 [knowledge_rag]
 - 如果子任务描述是查询订单/工单 → 只需要 [ticket_handler]
+- 如果对话历史已包含相关信息 → 只需要 [ticket_handler]
 
 请以JSON格式返回，字段名必须为: primary_intent, secondary_intent, confidence, entities, agent_chain
 

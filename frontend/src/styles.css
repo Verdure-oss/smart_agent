@@ -113,6 +113,12 @@ code {
   background: rgba(172, 78, 55, 0.14);
   color: #8a3d2b;
   border-color: rgba(138, 61, 43, 0.12);
+  animation: pulse-offline 2s ease-in-out infinite;
+}
+
+@keyframes pulse-offline {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 
 .dashboard-grid,

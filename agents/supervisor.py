@@ -116,6 +116,10 @@ SUPERVISOR_DECOMPOSE_PROMPT = """你是一个智能客服系统的 Supervisor（
 2. 为每个子任务提取关键实体（订单号、产品名、金额等）
 3. 判断子任务之间是否有依赖关系
 4. 如果只有一个意图，返回单个子任务即可
+5. 重要：保留用户的原始意图，不要改变语义
+   - "帮我退款" → description 应该是 "帮我退款" 或 "执行退款操作"，不是 "查询退款政策"
+   - "帮我开户" → description 应该是 "帮我开户" 或 "执行开户操作"，不是 "查询开户流程"
+   - "查订单TK-001" → description 应该是 "查询订单TK-001的当前状态"
 
 依赖关系说明：
 - 当一个任务的执行依赖于另一个任务的结果时，需要声明依赖
@@ -335,15 +339,21 @@ async def dispatch_step(state: AgentState, llm: ChatOpenAI) -> list[Send]:
 
     agent_name = chain[current_step]
 
+    # 节点名称映射（Intent Router 返回的名称 → 图节点名称）
+    node_name_map = {
+        "compliance_checker": "compliance_check",
+    }
+    graph_node_name = node_name_map.get(agent_name, agent_name)
+
     # 构建上下文：用户消息 + 前面步骤的结果
     context = _build_step_context(state, current_task_id, current_step)
 
-    logger.info("执行步骤: %s [%d/%d] → %s", current_task_id, current_step + 1, len(chain), agent_name)
+    logger.info("执行步骤: %s [%d/%d] → %s", current_task_id, current_step + 1, len(chain), graph_node_name)
 
-    return [Send(agent_name, {
+    return [Send(graph_node_name, {
         "messages": [HumanMessage(content=context)],
-        "current_agent": agent_name,
-        "_last_dispatched_agent": agent_name,
+        "current_agent": graph_node_name,
+        "_last_dispatched_agent": graph_node_name,
     })]
 
 

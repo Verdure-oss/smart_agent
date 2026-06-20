@@ -45,7 +45,7 @@ function getHealthLabel(status: HealthStatus): string {
     return "后端在线";
   }
   if (status === "offline") {
-    return "后端离线";
+    return "后端离线 (自动重试中...)";
   }
   return "检查连接中";
 }
@@ -107,6 +107,23 @@ export default function App() {
       setHealthStatus("offline");
     }
   }
+
+  // 自动重试：离线时每5秒检查一次后端状态
+  useEffect(() => {
+    if (healthStatus !== "offline") return;
+
+    const interval = setInterval(async () => {
+      try {
+        await checkHealth();
+        setHealthStatus("online");
+        clearInterval(interval);
+      } catch {
+        // 仍然离线，继续重试
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [healthStatus]);
 
   async function restoreHistory(targetSessionId: string) {
     if (!targetSessionId) {
@@ -185,9 +202,9 @@ export default function App() {
             ? {
                 ...message,
                 role: "system",
-                content: `请求失败：${nextError}`,
+                content: `请求失败：${nextError}\n\n后端可能正在重启，系统将自动重试连接...`,
                 pending: false,
-                meta: "请确认 Python 后端和模型配置已启动",
+                meta: "等待后端恢复后，刷新页面或重新发送消息",
                 timestamp: new Date().toISOString(),
               }
             : message,

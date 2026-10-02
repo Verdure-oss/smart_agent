@@ -298,12 +298,20 @@ class SupervisorNode:
             )
         else:
             result_parts = []
-            # 只使用汇总结果（task_id 为 key），跳过步骤级别结果（含 _step_）
-            for key, result in task_results.items():
-                if "_step_" in key:
-                    continue
+            # 优先使用 sub_results（合规审查已脱敏），去重顺序：knowledge_rag → ticket_handler
+            for agent_name in ("knowledge_rag", "ticket_handler"):
+                result = sub_results.get(agent_name)
                 if isinstance(result, str) and result.strip():
                     result_parts.append(result)
+
+            # 兜底：如果 sub_results 里没有 string 结果，再从 task_results 补
+            if not result_parts:
+                for key, result in task_results.items():
+                    if "_step_" in key:
+                        continue
+                    if isinstance(result, str) and result.strip():
+                        result_parts.append(result)
+
             final_response = "\n\n".join(result_parts) if result_parts else "抱歉，暂时无法处理您的请求，请稍后重试。"
 
         # 检查是否有需要补充信息的工单，存储到工作记忆

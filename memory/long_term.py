@@ -8,15 +8,34 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
 try:
     import faiss
 except ImportError:
     faiss = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+    _HAS_SENTENCE_TRANSFORMERS = True
+except ImportError:
+    _HAS_SENTENCE_TRANSFORMERS = False
+
+
+def _has_cuda() -> bool:
+    """检查是否有CUDA可用"""
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
 
 
 class LongTermMemory:
@@ -37,12 +56,15 @@ class LongTermMemory:
     def __init__(
         self,
         index_path: str = "./vector_store/faiss_index",
-        embedding_dim: int = 1536,
+        embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
     ):
         self.index_path = Path(index_path)
-        self.embedding_dim = embedding_dim
+        self._embedding_model_name = embedding_model
         self._documents: list[dict[str, Any]] = []
         self._index = None
+        self._embedder = None
+        self._init_embedder()
+        self.embedding_dim = self._embedder.get_sentence_embedding_dimension() if self._embedder else 384
         self._init_index()
 
     def _init_index(self):
@@ -58,26 +80,63 @@ class LongTermMemory:
                 if metadata_path.exists():
                     with open(metadata_path, "r", encoding="utf-8") as f:
                         self._documents = json.load(f)
-            except Exception:
+                # 如果维度不匹配，重新建索引
+                d = self._index.d
+                if d != self.embedding_dim:
+                    logger.warning("[LongTerm] 索引维度 %d != embedder维度 %d，重建索引", d, self.embedding_dim)
+                    self._index = faiss.IndexFlatIP(self.embedding_dim)
+                    # 重新插入已有文档
+                    for doc in self._documents:
+                        vec = self.get_embedding(doc["content"])
+                        self._index.add(vec.reshape(1, -1))
+            except Exception as e:
+                logger.warning("[LongTerm] 读取已有索引失败 (%s)，重建", e)
                 self._index = faiss.IndexFlatIP(self.embedding_dim)
         else:
             self._index = faiss.IndexFlatIP(self.embedding_dim)
 
-    def _simple_embedding(self, text: str) -> np.ndarray:
-        """
-        简易文本嵌入（演示用）。
-        生产环境应替换为 OpenAI Embedding API 或本地模型。
-        """
-        # 把文本 text 转成一个唯一的哈希字符串（类似指纹）
+    def _init_embedder(self):
+        """初始化本地嵌入模型（按需下载）"""
+        if not _HAS_SENTENCE_TRANSFORMERS:
+            logger.warning("[LongTerm] sentence-transformers 不可用，回退到哈希嵌入")
+            return
+
+        # 优先考虑环境变量指定的本地路径
+        local_path = os.getenv("SENTENCE_TRANSFORMERS_MODEL_PATH", "")
+        load_path = local_path if local_path else self._embedding_model_name
+
+        # 优先从本地缓存/路径加载，失败则从 HuggingFace 下载
+        try:
+            # 若指定了 HF 镜像或 token，利用环境变量
+            use_auth = os.getenv("HF_TOKEN")
+            kwargs = {"device": "cuda" if _has_cuda() else "cpu"}
+            if use_auth:
+                kwargs["use_auth_token"] = use_auth
+            self._embedder = SentenceTransformer(load_path, **kwargs)
+            self.embedding_dim = self._embedder.get_sentence_embedding_dimension()
+            logger.info("[LongTerm] 嵌入模型加载成功: %s (dim=%d)", load_path, self.embedding_dim)
+        except Exception as e:
+            logger.warning("[LongTerm] 嵌入模型加载失败 (%s)，回退到哈希嵌入", e)
+            self._embedder = None
+
+    def get_embedding(self, text: str) -> np.ndarray:
+        """获取文本嵌入向量，优先使用本地模型，失败时回退到哈希"""
+        if self._embedder is not None:
+            return self._embedder.encode(text, normalize_embeddings=True).astype(np.float32)
+        # fallback: hash-based deterministic embedding (for dev only)
         text_hash = hashlib.sha256(text.encode()).hexdigest()
         np.random.seed(int(text_hash[:8], 16) % (2**32))
-        vec = np.random.randn(self.embedding_dim).astype(np.float32)
+        vec = np.random.randn(384).astype(np.float32)
         vec /= np.linalg.norm(vec)
         return vec
 
+    def _simple_embedding(self, text: str) -> np.ndarray:
+        """兼容旧接口，调用 get_embedding"""
+        return self.get_embedding(text)
+
     def add_document(self, content: str, source: str = "", metadata: dict | None = None) -> str:
         """添加文档到向量库"""
-        
+
         # 生成唯一id
         doc_id = hashlib.md5(content.encode()).hexdigest()[:12]
 
@@ -91,7 +150,7 @@ class LongTermMemory:
         self._documents.append(doc)
 
         if self._index is not None:
-            embedding = self._simple_embedding(content)
+            embedding = self.get_embedding(content)
             self._index.add(embedding.reshape(1, -1))
 
         return doc_id
@@ -113,7 +172,7 @@ class LongTermMemory:
         if self._index is None or not self._documents:
             return self._fallback_search(query, top_k)
 
-        query_vec = self._simple_embedding(query).reshape(1, -1)
+        query_vec = self.get_embedding(query).reshape(1, -1)
         scores, indices = self._index.search(query_vec, min(top_k, len(self._documents)))
 
         results = []

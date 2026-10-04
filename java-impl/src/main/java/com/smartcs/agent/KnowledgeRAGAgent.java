@@ -2,6 +2,7 @@ package com.smartcs.agent;
 
 import com.smartcs.mcp.MCPToolServer;
 import com.smartcs.memory.LongTermMemoryService;
+import com.smartcs.memory.Reranker;
 import com.smartcs.tracing.AgentTracer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,16 +57,19 @@ public class KnowledgeRAGAgent implements BaseAgent {
     private final LongTermMemoryService longTermMemory;
     private final MCPToolServer mcpServer;
     private final AgentTracer tracer;
+    private final Reranker reranker;
 
     public KnowledgeRAGAgent(
             ChatClient.Builder chatClientBuilder,
             LongTermMemoryService longTermMemory,
             MCPToolServer mcpServer,
-            AgentTracer tracer) {
+            AgentTracer tracer,
+            Reranker reranker) {
         this.chatClient = chatClientBuilder.defaultAdvisors(new SimpleLoggerAdvisor()).build();
         this.longTermMemory = longTermMemory;
         this.mcpServer = mcpServer;
         this.tracer = tracer;
+        this.reranker = reranker;
     }
 
     @Override
@@ -78,23 +82,26 @@ public class KnowledgeRAGAgent implements BaseAgent {
             // Step 1: Query 改写（口语 → 检索友好；失败回退原查询）
             String rewritten = tracer.trace("knowledge_rag", "rewrite", () -> rewriteQuery(query));
 
-            // Step 2: 混合检索（优先经 MCP 工具层 knowledge_search，失败回退内存直查）
-            List<Map<String, Object>> docs;
+            // Step 2: 混合召回（放大候选池 top_k=5，对齐 Python retrieve_documents）+
+            //         重排选 top_k=3（对齐 Python rerank_documents，LLM 重排）
+            List<Map<String, Object>> rawDocs;
             try {
                 Map<String, Object> call = mcpServer.callTool("knowledge_search", Map.of(
                         "query", rewritten,
-                        "top_k", 3
+                        "top_k", 5
                 ));
                 if (Boolean.TRUE.equals(call.get("success")) && call.get("result") instanceof List<?> resultList) {
                     @SuppressWarnings("unchecked")
                     List<Map<String, Object>> cast = (List<Map<String, Object>>) resultList;
-                    docs = cast;
+                    rawDocs = cast;
                 } else {
-                    docs = longTermMemory.search(rewritten, 3);
+                    rawDocs = longTermMemory.recall(rewritten, 5);
                 }
             } catch (Exception e) {
-                docs = longTermMemory.search(rewritten, 3);
+                rawDocs = longTermMemory.recall(rewritten, 5);
             }
+            List<Map<String, Object>> docs = reranker.rerank(rewritten, rawDocs, 3);
+            log.info("[RAG] Step2/3: 召回{}个 → 重排选{}个", rawDocs.size(), docs.size());
 
             // 无文档兜底：直接返回转人工话术，省一次 LLM 调用
             if (docs.isEmpty()) {

@@ -85,9 +85,22 @@ public class LongTermMemoryService {
     }
 
     /**
-     * 混合检索：BM25 + TF 向量 双路召回 → RRF 融合。
+     * 混合召回（放大候选池）— 对齐 Python 版 hybrid_search 的召回阶段。
+     * 返回 candidateK 个候选（默认 5），不打 RRF 截到 topK，交给下游 Reranker 精排。
+     * 字段含 score(RRF)。
+     */
+    public List<Map<String, Object>> recall(String query, int candidateK) {
+        return rrfHybrid(query, candidateK);
+    }
+
+    /**
+     * 混合检索（召回 → RRF 截断到 topK）— 兼容旧接口，等效于不重排的 RRF 检索。
      */
     public List<Map<String, Object>> search(String query, int topK) {
+        return rrfHybrid(query, topK);
+    }
+
+    private List<Map<String, Object>> rrfHybrid(String query, int topK) {
         Map<String, Double> queryTf = tokenize(query);
         if (queryTf.isEmpty()) {
             return List.of();

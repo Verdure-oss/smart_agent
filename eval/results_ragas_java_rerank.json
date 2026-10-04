@@ -1,0 +1,21 @@
+{
+  "eval_script": "eval/ragas_judge.py --retrieval eval/java_retrievals_rerank.json",
+  "dataset": "eval/dataset_v2.json",
+  "method": "RAGAS 风格 LLM-as-judge (gpt-6-luna)，与 Python 版同一套 judge 公式",
+  "pipeline": "recall(top_k=5) -> LLM rerank(top_k=3)",
+  "top_k": 3,
+  "samples": 24,
+  "context_precision": 95.83,
+  "context_recall": 95.14,
+  "retrieval": "Java 版：BM25 + TF向量 双路召回 + RRF 融合（java-impl/LongTermMemoryService）",
+  "rerank": "Java 版 LLM 重排（java-impl/Reranker，对齐 Python _llm_rerank）",
+  "offline_ir": {
+    "context_precision": 88.89,
+    "context_recall": 89.58,
+    "mrr": 0.9792,
+    "hit_at_3": 100.0
+  },
+  "reproduce_cmd": "powershell java-impl/rerank-eval-smoke.ps1; python eval/ragas_judge.py --retrieval eval/java_retrievals_rerank.json",
+  "note": "Java 完整链路（含重排），判分复用 Python RagasJudge 严格同口径；Precision 追平、Recall 反超 Python 版归档",
+  "date": "2026-10-04"
+}

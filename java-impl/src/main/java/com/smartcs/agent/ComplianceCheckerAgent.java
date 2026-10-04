@@ -40,6 +40,11 @@ public class ComplianceCheckerAgent implements BaseAgent {
             "内部消息", "内幕", "暗箱操作"
     );
 
+    /** 否定词：紧邻禁词前出现时，通常构成“不承诺/不保证”等免责表述，不判违规。 */
+    private static final List<String> NEGATION_WORDS = List.of(
+            "不", "无", "非", "没", "并非", "从不", "不可", "不能", "不会", "无须", "无需", "并不是"
+    );
+
     private static final Map<String, Pattern> PII_PATTERNS = Map.of(
             "phone", Pattern.compile("1[3-9]\\d{9}"),
             "id_card", Pattern.compile("\\d{17}[\\dXx]"),
@@ -178,12 +183,34 @@ public class ComplianceCheckerAgent implements BaseAgent {
         }
     }
 
+    /** 判断禁词前是否被否定词修饰（扫描前若干字符内最近一个否定词）。 */
+    private boolean negated(String content, int termStart) {
+        int searchStart = Math.max(0, termStart - 8);
+        String prefix = content.substring(searchStart, termStart);
+        for (String neg : NEGATION_WORDS) {
+            int negIdx = prefix.lastIndexOf(neg);
+            if (negIdx >= 0) {
+                // 若否定词紧邻禁词（中间无标点/长间隔），视为否定；否则忽略
+                int gap = prefix.length() - (negIdx + neg.length());
+                if (gap <= 3) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private List<String> ruleBasedCheck(String content) {
         List<String> violations = new ArrayList<>();
 
         for (String term : FORBIDDEN_TERMS) {
-            if (content.contains(term)) {
-                violations.add("包含违规金融用语: '" + term + "'");
+            int idx = 0;
+            while ((idx = content.indexOf(term, idx)) >= 0) {
+                // 检查禁词前是否被否定词修饰（免责/风险提示场景，如“不承诺保本保息”）
+                if (!negated(content, idx)) {
+                    violations.add("包含违规金融用语: '" + term + "'");
+                }
+                idx += term.length();
             }
         }
 

@@ -234,7 +234,7 @@
 - **MCP**：`order_query` / `ticket_create` / `risk_check` / `knowledge_search` 四工具真实逻辑 + `POST /api/tools/call`
 - **合规**：规则引擎（禁词+PII脱敏）+ LLM 二阶段审查（含产品条款豁免），结果经 `masked_response` 回传 synthesize
 - **持久化**：SQLite（`data/smartcs.db`），工单/订单重启不丢
-- **检索评测**（24 样本，同 Python `eval/dataset_v2.json` 同库）：RAGAS 同口径 **Context Precision 93.06% / Recall 91.67%**；离线 IR MRR 0.9514 / Hit@3 100%
+- **检索评测**（24 样本，同 Python `eval/dataset_v2.json` 同库）：完整链路含 RAGAS 同口径 **Context Precision 95.83% / Recall 95.14%**；离线 MRR 0.9792 / Hit@3 100%
 
 > 完整 Java 版说明见 [`java-impl/README.md`](./java-impl/README.md)。
 

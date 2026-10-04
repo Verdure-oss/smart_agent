@@ -58,3 +58,5 @@ frontend/vite.config.js
 
 # Project prompts (internal use)
 prompt.md
+
+eval/_ragas_cache.json

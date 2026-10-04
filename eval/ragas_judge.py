@@ -154,6 +154,8 @@ async def main() -> None:
     parser.add_argument("--start", type=int, default=1, help="从第几个样本开始（1 起）")
     parser.add_argument("--end", type=int, default=0, help="到第几个样本（0=到最后）")
     parser.add_argument("--drop-cache", action="store_true", help="丢弃已有 LLM 判定缓存重新评测")
+    parser.add_argument("--retrieval", type=str, default="",
+        help="从外部检索结果 JSON 评测（如 Java 版 java_retrievals.json），跳过本地 hybrid_search")
     args = parser.parse_args()
 
     if args.drop_cache and CACHE_PATH.exists():
@@ -171,25 +173,39 @@ async def main() -> None:
     elif args.start > 1:
         pairs = pairs[args.start - 1 :]
 
-    mem = LongTermMemory(index_path=str(ROOT / "vector_store" / "_ragas_index"))
-    for doc in docs:
-        mem.add_document(doc["content"], source=doc["source"])
-    print(f"知识库文档数: {len(mem._documents)}  评测样本数: {len(pairs)}  top_k={args.top_k}")
+    mem = None
+    gold_by_source = {}
+    records = None
+    if args.retrieval:
+        records = json.loads(Path(args.retrieval).read_text(encoding="utf-8"))
+        print(f"评测样本数: {len(records)}  top_k={args.top_k}  来源: 外部检索 {args.retrieval}")
+    else:
+        mem = LongTermMemory(index_path=str(ROOT / "vector_store" / "_ragas_index"))
+        for doc in docs:
+            mem.add_document(doc["content"], source=doc["source"])
+        gold_by_source = {d["source"]: d["content"] for d in docs}
+        print(f"知识库文档数: {len(mem._documents)}  评测样本数: {len(pairs)}  top_k={args.top_k}")
 
     llm = ChatOpenAI(model="gpt-6-luna", temperature=0)
     judge = RagasJudge(llm)
-
-    # gold 文档内容索引：source → content
-    gold_by_source = {d["source"]: d["content"] for d in docs}
 
     precisions: list[float] = []
     recalls: list[float] = []
     retrievals: list[str] = []
 
-    for i, pair in enumerate(pairs, start=1):
-        q = pair["question"]
-        retr = hybrid_topk(mem, q, top_k=args.top_k)
-        chunks = [d["content"] for d in retr]
+    iterable = records if records is not None else pairs
+    for i, item in enumerate(iterable, start=1):
+        if records is not None:
+            q = item["question"]
+            chunks = [str(c) for c in item["chunks"]]
+            reference = item.get("reference") or ""
+        else:
+            q = item["question"]
+            retr = hybrid_topk(mem, q, top_k=args.top_k)
+            chunks = [d["content"] for d in retr]
+            reference = item.get("answer") or "\n".join(
+                gold_by_source.get(s, "") for s in item["relevant"]
+            )
 
         # RAGAS context_precision：逐 chunk 判定相关性
         rel_flags: list[bool] = []
@@ -208,9 +224,6 @@ async def main() -> None:
         precisions.append(precision)
 
         # RAGAS context_recall：标准答案作为参考，判断检索上下文覆盖其中多少要点
-        reference = pair.get("answer") or "\n".join(
-            gold_by_source.get(s, "") for s in pair["relevant"]
-        )
         recall = await judge.coverage(q, reference, chunks)
         recalls.append(recall)
 

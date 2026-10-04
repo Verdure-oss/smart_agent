@@ -60,7 +60,9 @@ START → decompose → intent_router → dispatch_step ⇄ collect_step(条件�
 - 编排拓扑（decompose→dispatch⇄collect→compliance→synthesize）与 Python LangGraph 一一对应
 - 多轮上下文修复（历史回填 `messages`；T2 指代"那最低投多少钱"正确命中金葵理财）
 - 滚动摘要压缩 + 按需注入（长会话 Token 节省实测 **0%→50%**）
-- 混合检索（BM25+向量+RRF）24 样本评测：**ContextP 88.89% / ContextR 88.89% / MRR 0.9514 / Hit@3 100%**（优于 Python 版各基线）
+- 混合检索（BM25+向量+RRF）24 样本评测：
+  - 离线 IR 口径：ContextP 88.89% / ContextR 88.89% / MRR 0.9514 / Hit@3 100%（优于 Python 版各基线）
+  - RAGAS LLM-judge 口径：**Context Precision 93.06% / Context Recall 91.67%**（与简历同口径同公式，Recall 反超 Python）
 - MCP 四工具真实化（order_query / ticket_create / risk_check / knowledge_search），工单落 SQLite
 - 合规：规则引擎 + LLM 二阶段 + 豁免转述产品条款 + PII 脱敏回传
 
@@ -81,7 +83,7 @@ START → decompose → intent_router → dispatch_step ⇄ collect_step(条件�
 | 4 | MCP 四工具真实化 + `/api/tools/call` | 工具冒烟 8/8 |
 | 5 | 合规 LLM 二阶段 + token 计量（含 Spring AI 1.1 三个坑的规避） | `/metrics` 含 token，误判豁免修复 |
 | 6 | SQLite 持久化 | 重启后工单仍在（持久化实证） |
-| 7 | 检索评测（24 样本） | 见上指标 |
+| 7 | 检索评测（24 样本）：离线 IR 88.89%/88.89% + RAGAS LLM-judge 93.06%/91.67% | 见上指标 |
 
 ## 目录结构
 

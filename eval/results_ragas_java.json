@@ -1,0 +1,14 @@
+{
+  "eval_script": "eval/ragas_judge.py --retrieval eval/java_retrievals.json",
+  "dataset": "eval/dataset_v2.json",
+  "method": "RAGAS 风格 LLM-as-judge (gpt-6-luna)，与 Python 版同一套 judge 公式",
+  "top_k": 3,
+  "samples": 24,
+  "context_precision": 93.06,
+  "context_recall": 91.67,
+  "retrieval": "Java 版混合检索：BM25 + TF向量 双路召回 + RRF 融合（java-impl/LongTermMemoryService）",
+  "rerank": "无重排（与 Python 版 ragas_judge.py 检索口径一致，均不含 rerank）",
+  "reproduce_cmd": "python eval/ragas_judge.py --dataset eval/dataset_v2.json --retrieval eval/java_retrievals.json",
+  "note": "检索结果由 java-impl 的 RetrievalRagasDump 导出，判分完全复用 Python RagasJudge，与简历 RAGAS 指标严格同口径",
+  "date": "2026-10-04"
+}

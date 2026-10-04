@@ -231,9 +231,9 @@ def create_default_tools(server: MCPToolServer, long_term_memory=None) -> MCPToo
         category="knowledge",
     )
     async def knowledge_search(query: str, top_k: int = 3) -> list[dict]:
-        # 使用FAISS向量检索（不是SQLite）
+        # 使用 BM25 + 向量双路混合召回（RRF 融合）
         if long_term_memory:
-            docs = long_term_memory.search(query, top_k=top_k)
+            docs = long_term_memory.hybrid_search(query, top_k=top_k)
             return docs if docs else [{"content": f"未找到关于'{query}'的相关文档", "source": "无"}]
         return [{"content": f"知识库未初始化", "source": "无"}]
 

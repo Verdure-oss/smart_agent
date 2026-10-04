@@ -38,6 +38,8 @@ class ShortTermMemory:
         self._redis_url = redis_url
         self._redis: Any = None
         self._fallback_store: dict[str, list] = {}
+        # 滚动摘要：session_id → {"text": 摘要文本, "compacted_upto": 已压缩到的消息条数}
+        self._summary_store: dict[str, dict] = {}
 
     async def _get_redis(self):
         """懒加载Redis连接"""
@@ -54,6 +56,9 @@ class ShortTermMemory:
 
     def _session_key(self, session_id: str) -> str:
         return f"smartcs:short_term:{session_id}"
+
+    def _summary_key(self, session_id: str) -> str:
+        return f"smartcs:short_term_summary:{session_id}"
 
     # 把一条对话消息存到“会话记忆”（优先 Redis，否则内存）
     async def add_message(self, session_id: str, role: str, content: str) -> None:
@@ -123,3 +128,47 @@ class ShortTermMemory:
             estimated_tokens += msg_tokens
 
         return "\n".join(context_parts)
+
+    # ─── 滚动摘要（按需注入核心） ───
+
+    async def set_summary(self, session_id: str, text: str, compacted_upto: int) -> None:
+        """保存会话滚动摘要，标记已压缩到的消息条数。"""
+        payload = json.dumps(
+            {"text": text, "compacted_upto": int(compacted_upto)},
+            ensure_ascii=False,
+        )
+        r = await self._get_redis()
+        if r is not None:
+            await r.set(self._summary_key(session_id), payload, ex=self.ttl_seconds)
+        else:
+            self._summary_store[session_id] = {
+                "text": text,
+                "compacted_upto": int(compacted_upto),
+            }
+
+    async def get_summary(self, session_id: str) -> tuple[str, int]:
+        """获取会话滚动摘要，返回 (摘要文本, compacted_upto)；无摘要时返回 ("", 0)。"""
+        r = await self._get_redis()
+        if r is not None:
+            raw = await r.get(self._summary_key(session_id))
+            if raw:
+                data = json.loads(raw)
+                return data.get("text", ""), int(data.get("compacted_upto", 0))
+            return "", 0
+        data = self._summary_store.get(session_id)
+        if data:
+            return data.get("text", ""), int(data.get("compacted_upto", 0))
+        return "", 0
+
+    async def get_injection_context(
+        self, session_id: str, recent_turns: int = 4
+    ) -> tuple[str, list[dict]]:
+        """
+        按需注入：返回 (滚动摘要文本, 最近 recent_turns 条消息列表)。
+
+        由调用方决定如何组装进 Prompt —— 摘要作为精简上下文，最近消息保持原文，
+        替代"全量历史入 Prompt"，从而控制 Prompt Token 长度。
+        """
+        summary_text, _ = await self.get_summary(session_id)
+        recent = await self.get_history(session_id, last_n=recent_turns * 2)
+        return summary_text, recent

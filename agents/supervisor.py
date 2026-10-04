@@ -200,7 +200,12 @@ class SupervisorNode:
 
     def __init__(self, llm: ChatOpenAI, working_memory: WorkingMemory):
         self.llm = llm
-        self.llm_with_structure = llm.with_structured_output(SupervisorOutput)
+        # 显式使用 function_calling：部分 OpenAI 兼容网关不支持
+        # response_format=json_schema 的复杂嵌套 schema（会返回 invalid_json_schema），
+        # function_calling 兼容性最好
+        self.llm_with_structure = llm.with_structured_output(
+            SupervisorOutput, method="function_calling"
+        )
         self.working_memory = working_memory
 
     @trace_agent_call("supervisor_decompose")
@@ -297,6 +302,8 @@ class SupervisorNode:
                 "工单编号已自动生成，请留意后续通知。"
             )
         else:
+            task_results = state.get("task_results", {})
+            sub_results = state.get("sub_results", {})
             result_parts = []
             # 优先使用 sub_results（合规审查已脱敏），去重顺序：knowledge_rag → ticket_handler
             for agent_name in ("knowledge_rag", "ticket_handler"):

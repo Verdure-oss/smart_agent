@@ -1,0 +1,13 @@
+{
+  "eval_script": "eval/ragas_judge.py",
+  "dataset": "eval/dataset_v2.json",
+  "method": "RAGAS 风格 LLM-as-judge (gpt-6-luna)",
+  "top_k": 3,
+  "samples": 24,
+  "context_precision": 95.83,
+  "context_recall": 94.79,
+  "retrieval": "BM25 + FAISS 双路召回 + RRF 融合",
+  "rerank": "LLM 重排(离线环境) / bge-reranker-base(在线)",
+  "reproduce_cmd": "python eval/ragas_judge.py --dataset eval/dataset_v2.json --samples 24",
+  "date": "2026-10-03"
+}

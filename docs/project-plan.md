@@ -45,14 +45,16 @@ graph TD
     Supervisor --> observability
 ```
 
-## 二、项目结构设计（三语言实现）
+## 二、项目结构设计
+
+> 注：当前仓库为 **Python 单语言实现**（FastAPI + LangGraph）。Java/Go 方案仅见于 `docs/interview/` 面试素材，不含可运行代码。
 
 ```
 smart-cs-multi-agent/
 ├── README.md                          # 项目总览
 ├── docs/
-│   ├── architecture.md                # 架构设计文档
-│   ├── code-walkthrough.md            # 代码讲解文档
+│   ├── 架构.md                        # 架构设计文档
+│   ├── 核心代码讲解.md                # 代码讲解文档
 │   ├── deployment.md                  # 部署指南
 │   ├── project-plan.md               # 本文件（调研与规划）
 │   └── interview/
@@ -62,55 +64,66 @@ smart-cs-multi-agent/
 │       └── 项目问答.md                # 项目问答模拟
 │
 ├── agents/                            # Python Agent实现 (LangGraph)
-│   ├── supervisor.py                  # Supervisor编排Agent
+│   ├── supervisor.py                  # Supervisor编排Agent（子任务拆解/循环调度）
 │   ├── intent_router.py               # 意图路由Agent
-│   ├── knowledge_rag.py               # 知识检索Agent (RAG)
+│   ├── knowledge_rag.py               # 知识检索Agent (混合召回RAG)
 │   ├── ticket_handler.py              # 工单处理Agent
 │   └── compliance_checker.py          # 合规审查Agent
 ├── memory/
 │   ├── working_memory.py              # 工作记忆
-│   ├── short_term.py                  # 短期记忆(Redis)
-│   └── long_term.py                   # 长期记忆(向量库)
+│   ├── short_term.py                  # 短期记忆(Redis + 滚动摘要)
+│   └── long_term.py                   # 长期记忆(FAISS + BM25 + RRF)
 ├── mcp/                               # MCP工具协议
 │   └── mcp_server.py
-├── tracing/                           # OpenTelemetry追踪
+├── tracing/                           # OpenTelemetry追踪 + AgentMetrics(token计量)
 │   └── otel_config.py
 ├── api/                               # FastAPI接口
 │   └── main.py
-├── frontend/                          # React + Vite 前端联调页
-│   ├── src/
-│   ├── package.json
-│   └── vite.config.ts
+├── database/                          # SQLite（orders/tickets）
+│   └── db.py
+├── eval/                              # RAG检索评测 + Token优化评测
+│   ├── rag_eval.py                    # 离线 IR 指标（三路召回对比）
+│   ├── ragas_judge.py                 # RAGAS 风格 LLM-as-Judge
+│   ├── token_compression_eval.py      # 按需注入 Token 节省
+│   ├── dataset.json / dataset_v2.json
+│   └── results_ragas.json
+├── frontend/                          # React + Vite 聊天控制台
 ├── requirements.txt
 └── .env.example
 ```
 
 ## 三、核心技术亮点（面试重点）
 
-### 3.1 Supervisor编排模式
-- Supervisor作为中央协调者，接收用户请求后决定分发给哪个子Agent
-- 支持并行调用多个Agent（如同时查知识库+检查合规）
-- 实现 Human-in-the-Loop 断点，敏感操作需人工审批
+### 3.1 Supervisor 编排模式
+- Supervisor 作为中央协调者，接收用户请求后**将诉求自动拆解为带依赖关系的子任务**并规划链路
+- **循环调度**：`dispatch_step` ⇄ `collect_step`，配合 LLM 评估依赖条件（如"收益率>5%才购买"）顺序推进
+- 支持多专业子 Agent（意图路由 / 知识检索 / 工单 / 合规）协作
+- 数据结构预留并行能力（`needs_parallel` / `dispatch_mode`），当前以串行循环+依赖为主
 
 ### 3.2 分层记忆系统
-- **工作记忆**：当前对话的中间推理状态（存于Agent State，进程内，零延迟）
-- **短期记忆**：最近N轮对话上下文（Redis, TTL 30分钟，滑动窗口淘汰）
-- **长期记忆**：用户画像+历史工单+知识库（向量数据库 FAISS/Milvus，持久化）
+- **工作记忆**：当前对话的中间推理状态（进程内，跨轮收集补充信息）
+- **短期记忆**：会话上下文（Redis，TTL 30 分钟，滑动窗口 20 轮），并实现**滚动摘要压缩**——超阈值时用 LLM 把旧消息压成摘要，仅留最近几轮原文
+- **长期记忆**：用户画像 + 知识库（FAISS + sentence-transformers），提供 **BM25 + 向量双路召回 → RRF 融合**
+- **按需注入**：`api/main.py` 注入「摘要 + 近轮原文 + 当前消息」替代全量历史，用 tiktoken 实测量化，Prompt Token 均值降低约 20%（保守下限）
 
-### 3.3 MCP工具协议
-- 遵循 Model Context Protocol 标准，Agent通过 JSON-RPC 2.0 调用外部工具
-- 工具包括：订单查询、工单创建、知识库搜索、风控接口
-- 统一工具注册/发现机制（tools/list + tools/call），支持动态扩展
+### 3.3 MCP 工具协议
+- 遵循 Model Context Protocol 标准，Agent 通过 JSON-RPC 2.0 调用外部工具（tools/list + tools/call）
+- 默认工具：订单查询、工单创建、风控、知识检索（混合召回）
+- 工单 / 合规 / 知识 Agent 已通过该层实际调用业务系统
 
-### 3.4 全链路追踪
-- OpenTelemetry 标准集成，每个Agent调用生成 Span
-- 追踪链路：用户请求 → Supervisor → 子Agent → 工具调用 → 响应
-- 关键指标：延迟、Token消耗、Agent路由准确率、工具调用成功率
+### 3.4 混合检索 RAG
+- **Query 改写 → 双路召回（FAISS 向量 + BM25）→ RRF 融合 → Rerank 精排 → 生成**
+- 向量捕捉语义、BM25 抓专有名词，RRF 按排序位置融合
+- 评测：`eval/`，RAGAS 风格 LLM-as-Judge 下 Context Precision 95.8% / Context Recall 94.8%（24 题、top_k=3）
 
-### 3.5 合规审查（金融场景）
-- 两阶段机制：规则引擎毫秒级快筛 + LLM深度审查
-- 检查维度：敏感词、PII泄露、越权承诺、违规金融用语
-- 规则引擎保底（召回率>99%），LLM提升精确率（>95%）
+### 3.5 全链路追踪
+- OpenTelemetry 标准集成，每个 Agent 调用生成 Span
+o 关键指标：延迟、Token 消耗（AgentMetrics 按 Agent 维度累计 input/output token）、路由决策、工具调用成功率
+
+### 3.6 合规审查（金融场景）
+- 两阶段机制：规则引擎毫秒级快筛 + LLM 深度审查
+- 检查维度：敏感词、PII 泄露、越权承诺、违规金融用语；输出含 PII 脱敏
+- 规则引擎保底（召回率优先），LLM 提升精确率
 
 ## 四、面试准备材料
 

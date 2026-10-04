@@ -1,0 +1,23 @@
+{
+  "向量单路(FAISS)": {
+    "context_precision": 0.5972,
+    "context_recall": 0.5694,
+    "mrr": 0.8681,
+    "hit_rate": 1.0,
+    "n_queries": 24
+  },
+  "BM25单路": {
+    "context_precision": 0.7917,
+    "context_recall": 0.7431,
+    "mrr": 0.9514,
+    "hit_rate": 1.0,
+    "n_queries": 24
+  },
+  "混合(RRF融合)": {
+    "context_precision": 0.6667,
+    "context_recall": 0.6319,
+    "mrr": 0.9167,
+    "hit_rate": 0.9583,
+    "n_queries": 24
+  }
+}

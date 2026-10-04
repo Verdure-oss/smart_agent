@@ -111,18 +111,23 @@
 | 特性 | 说明 |
 |------|------|
 | 中央协调 | 由Supervisor统一调度，子Agent只做专业工作 |
-| 并行调度 | 多个Agent可同时工作，提升处理速度 |
-| Human-in-the-Loop | 敏感问题自动暂停，等待人工确认 |
+| 子任务拆解 | 将复杂诉求自动拆解为带依赖关系的子任务，并按依赖条件顺序推进 |
+| 循环调度 | dispatch_step ⇄ collect_step 循环执行，直至依赖满足 |
+| 合规汇聚 | 所有业务结果统一经合规审查后汇总 |
 | 断点恢复 | 使用LangGraph Checkpoint，对话可中断续接 |
+
+> 说明：并行调度与 Human-in-the-Loop 的底层能力已铺垫（`dispatch_mode`/Checkpoint），当前实际以串行循环 + 依赖条件执行。
 
 ### 2. 分层记忆系统
 **为什么需要三层记忆？** 类似人类记忆：工作桌(工作记忆) + 笔记本(短期) + 大脑长期记忆。
 
 | 记忆层 | 存储位置 | 生命周期 | 延迟 | 用途 |
 |--------|----------|----------|------|------|
-| **工作记忆** | 进程内存 (dict) | 单次请求 | <1ms | 当前推理状态、路由决策上下文 |
-| **短期记忆** | Redis | TTL 30分钟 | 1-5ms | 多轮对话上下文（保留最近20轮） |
-| **长期记忆** | FAISS/Milvus 向量库 | 永久 | 10-50ms | 知识库、用户画像、历史工单 |
+| **工作记忆** | 进程内存 (dict) | 单次请求 | <1ms | 当前推理状态、跨轮补充信息收集 |
+| **短期记忆** | Redis（不可用降级内存） | TTL 30分钟 | 1-5ms | 多轮对话上下文（滚动摘要 + 最近几轮原文） |
+| **长期记忆** | FAISS + sentence-transformers | 永久 | 10-50ms | 知识库、用户画像、历史工单（BM25+向量混合检索） |
+
+**按需注入优化 Token**：注入 Prompt 时用「滚动摘要 + 最近几轮 + 当前消息」替代全量 20 轮历史，用 tiktoken 实测量化。
 
 ### 3. MCP 工具协议
 **什么是MCP？** Model Context Protocol，AI模型调用外部工具的标准协议，类似HTTP规范了Web通信。
@@ -142,11 +147,12 @@
 ```
 
 已实现的MCP工具：
-- `order_query` — 查询订单状态、物流信息
-- `ticket_create` / `ticket_update` — 工单创建和更新
-- `risk_check` — 金融风控接口
-- `kb_search` — 知识库全文搜索
-- `user_profile` — 用户画像查询
+- `order_query` — 查询订单状态、金额
+- `ticket_create` — 工单创建
+- `risk_check` — 金融风控（金额阈值规则）
+- `knowledge_search` — 知识库检索（FAISS + BM25 + RRF 混合召回）
+
+> 工单 Agent 通过 `order_query` / `ticket_create` 实际落库，合规 Agent 调用 `risk_check`，知识 Agent 优先走 `knowledge_search`。
 
 ### 4. RAG 知识检索
 **什么是RAG？** Retrieval-Augmented Generation，先从知识库检索相关内容，再让AI生成回答，避免AI"瞎编"。
@@ -155,13 +161,17 @@
 用户问题: "怎么退款？"
     ↓ Query改写（扩展关键词）
 "退款 政策 申请 流程 时限"
-    ↓ 向量化（转为1536维数字）
-    ↓ 向量检索（找最相似的Top-5文档）
-    ↓ 重排序（LLM评估相关性 → Top-3）
-    ↓ 上下文注入（文档内容 + 用户问题）
-    ↓ LLM生成（基于文档的准确回答）
+    ↓ 双路召回
+      · FAISS 向量检索（语义匹配）Top-N
+      · BM25 关键词检索（专有名词）Top-N
+    ↓ RRF 融合（两路按排序位置合并）
+    ↓ Rerank 精排（Cross Encoder，离线降级 LLM）→ Top-3
+    ↓ 上下文注入（文档内容 + 用户问题 + 来源标注）
+    ↓ LLM生成（基于文档、约束回答边界）
 最终回答 + 引用来源标注
 ```
+
+**为什么混合召回？** 向量擅长语义近义，BM25 擅长精确匹配专有名词（产品名、订单号），RRF 融合兼顾召回与精确。可运行 `python eval/rag_eval.py` 横向对比三路，`python eval/ragas_judge.py --samples 24` 做 RAGAS 风格评测。
 
 ### 5. 全链路追踪 (OpenTelemetry)
 可以清楚地看到每次请求经过哪些Agent、每个步骤耗时多少、消耗了多少Token：
@@ -272,6 +282,8 @@ smart-cs-multi-agent/
 ├── memory/                         ← 工作记忆 / 短期记忆 / 长期记忆
 ├── mcp/                            ← MCP 工具注册、发现与调用
 ├── tracing/                        ← OpenTelemetry 配置与指标汇总
+├── database/                       ← SQLite（orders / tickets 持久化）
+├── eval/                           ← RAG 检索评测 + Token 优化评测
 ├── frontend/                       ← React + Vite 前端联调页面
 │   ├── package.json
 │   ├── vite.config.ts

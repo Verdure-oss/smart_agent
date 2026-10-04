@@ -1,0 +1,58 @@
+{
+  "knowledge_docs": [
+    {
+      "source": "product_faq.md",
+      "content": "我们的理财产品A年化收益率为3.5%-5.2%，投资期限为6个月至3年，最低投资金额10000元。注意：理财非存款，产品有风险，投资须谨慎。"
+    },
+    {
+      "source": "refund_policy.md",
+      "content": "退款政策：用户在购买后7天内可申请无理由退款，超过7天需提供合理原因。退款将在3-5个工作日内原路退回。"
+    },
+    {
+      "source": "account_guide.md",
+      "content": "开户流程：1.准备身份证原件 2.填写开户申请表 3.进行视频认证 4.设置交易密码 5.完成风险评估问卷。整个流程约需15-30分钟。"
+    },
+    {
+      "source": "order_faq.md",
+      "content": "订单查询方式：提供订单号或用户ID即可查询订单状态、物流进度与购买金额。"
+    },
+    {
+      "source": "risk_guide.md",
+      "content": "风险测评说明：根据年龄、收入、投资经验、风险承受能力等多维度评估投资者风险等级，测评结果有效期两年。"
+    },
+    {
+      "source": "compound.md",
+      "content": "复利计算：理财收益按复利计算时，本金与已产生收益会共同产生下一期收益，长期持有收益更可观。"
+    },
+    {
+      "source": "transfer_limit.md",
+      "content": "转账限额说明：单笔转账限额5万元，单日累计限额20万元，大额转账需前往柜台或视频认证。"
+    },
+    {
+      "source": "fund.md",
+      "content": "基金定投说明：每月固定日期定投指定金额，可平摊成本、降低择时风险，适合长期投资。"
+    },
+    {
+      "source": "insurance.md",
+      "content": "退保政策：犹豫期内退保无损失，超过犹豫期按现金价值退还，具体以保险合同为准。"
+    },
+    {
+      "source": "rate_adjust.md",
+      "content": "利率调整说明：市场利率变化时，产品预期收益率可能随之调整，以公告为准。"
+    }
+  ],
+  "qa_pairs": [
+    { "question": "理财产品A的收益率是多少？", "relevant": ["product_faq.md"] },
+    { "question": "怎么办理退款？", "relevant": ["refund_policy.md"] },
+    { "question": "开户需要准备什么材料？", "relevant": ["account_guide.md"] },
+    { "question": "怎么查询我的订单？", "relevant": ["order_faq.md"] },
+    { "question": "退款多少天能到账？", "relevant": ["refund_policy.md"] },
+    { "question": "理财产品A最低投多少钱？", "relevant": ["product_faq.md"] },
+    { "question": "开户需要视频认证吗？", "relevant": ["account_guide.md"] },
+    { "question": "退货退款的政策是什么？", "relevant": ["refund_policy.md"] },
+    { "question": "风险测评的有效期是多久？", "relevant": ["risk_guide.md"] },
+    { "question": "转账的限额是多少？", "relevant": ["transfer_limit.md"] },
+    { "question": "理财产品A有风险吗？", "relevant": ["product_faq.md"] },
+    { "question": "退保能退多少钱？", "relevant": ["insurance.md"] }
+  ]
+}

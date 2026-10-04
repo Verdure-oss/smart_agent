@@ -1,7 +1,7 @@
 """
 长期记忆 — 基于向量数据库的持久化记忆
 存储用户画像、历史工单、知识库文档等需要持久化的信息。
-支持语义相似度检索，用于RAG知识检索Agent。
+支持语义相似度检索（FAISS）+ 关键词检索（BM25）+ RRF 混合召回，用于 RAG 知识检索 Agent。
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,69 @@ try:
 except ImportError:
     _HAS_SENTENCE_TRANSFORMERS = False
 
+try:
+    from rank_bm25 import BM25Okapi
+    _HAS_RANK_BM25 = True
+except ImportError:
+    _HAS_RANK_BM25 = False
+
+try:
+    import jieba
+    _HAS_JIEBA = True
+except ImportError:
+    _HAS_JIEBA = False
+
+
+def _tokenize_text(text: str) -> list[str]:
+    """中文友好的分词：优先 jieba，回退到英文单词 + 汉字单字切分。"""
+    text = (text or "").lower()
+    if _HAS_JIEBA:
+        tokens = [t.strip() for t in jieba.cut(text) if t.strip()]
+        if tokens:
+            return tokens
+    # 兜底：英文/数字按词，中文按单字，避免无 jieba 时中文整句成为一个 token
+    import re
+    return re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]", text)
+
+
+class _SimpleBM25:
+    """纯 Python 的极简 BM25 实现，仅作为 rank_bm25 不可用时的兜底。"""
+
+    def __init__(self, corpus: list[list[str]]):
+        self.corpus = corpus
+        self.n_docs = len(corpus)
+        self.avgdl = (sum(len(d) for d in corpus) / self.n_docs) if self.n_docs else 0.0
+        self.k1 = 1.5
+        self.b = 0.75
+        self._df: dict[str, int] = {}
+        for doc in corpus:
+            for term in set(doc):
+                self._df[term] = self._df.get(term, 0) + 1
+
+    def _idf(self, term: str) -> float:
+        df = self._df.get(term, 0)
+        if df == 0:
+            return 0.0
+        return math.log((self.n_docs - df + 0.5) / (df + 0.5) + 1.0)
+
+    def get_scores(self, query: list[str]) -> list[float]:
+        scores: list[float] = []
+        for doc in self.corpus:
+            doc_len = len(doc)
+            tf: dict[str, int] = {}
+            for t in doc:
+                tf[t] = tf.get(t, 0) + 1
+            score = 0.0
+            for term in query:
+                f = tf.get(term, 0)
+                if f == 0:
+                    continue
+                dl = doc_len / (self.avgdl or 1.0)
+                denom = f + self.k1 * (1 - self.b + self.b * dl)
+                score += self._idf(term) * (f * (self.k1 + 1)) / denom
+            scores.append(float(score))
+        return scores
+
 
 def _has_cuda() -> bool:
     """检查是否有CUDA可用"""
@@ -40,12 +104,13 @@ def _has_cuda() -> bool:
 
 class LongTermMemory:
     """
-    长期记忆：基于FAISS的向量检索。
+    长期记忆：基于FAISS的向量检索 + BM25 关键词检索。
 
     特点：
     - 向量化存储，支持语义相似度检索
+    - BM25 关键词检索，补充向量检索对专有名词/精确术语的短板
+    - 双路召回后 RRF 融合排序
     - 持久化到磁盘，跨会话保持
-    - 支持增量更新和批量导入
     - 生产环境可切换为Milvus/Pinecone
 
     文档分块策略：
@@ -63,9 +128,24 @@ class LongTermMemory:
         self._documents: list[dict[str, Any]] = []
         self._index = None
         self._embedder = None
+        self._bm25 = None
+        self._bm25_dirty = True
         self._init_embedder()
-        self.embedding_dim = self._embedder.get_sentence_embedding_dimension() if self._embedder else 384
+        self.embedding_dim = self._get_embedder_dim()
         self._init_index()
+
+    def _get_embedder_dim(self) -> int:
+        """获取嵌入维度，兼容新旧版 sentence-transformers API"""
+        if self._embedder is None:
+            return 384
+        # 新版本 API 优先（get_embedding_dimension），回退旧版本（get_sentence_embedding_dimension）
+        getter = getattr(self._embedder, "get_embedding_dimension", None)
+        if getter is None:
+            getter = getattr(self._embedder, "get_sentence_embedding_dimension", None)
+        try:
+            return getter() if getter is not None else 384
+        except Exception:
+            return 384
 
     def _init_index(self):
         """初始化FAISS索引"""
@@ -113,7 +193,7 @@ class LongTermMemory:
             if use_auth:
                 kwargs["use_auth_token"] = use_auth
             self._embedder = SentenceTransformer(load_path, **kwargs)
-            self.embedding_dim = self._embedder.get_sentence_embedding_dimension()
+            self.embedding_dim = self._get_embedder_dim()
             logger.info("[LongTerm] 嵌入模型加载成功: %s (dim=%d)", load_path, self.embedding_dim)
         except Exception as e:
             logger.warning("[LongTerm] 嵌入模型加载失败 (%s)，回退到哈希嵌入", e)
@@ -148,6 +228,7 @@ class LongTermMemory:
             "metadata": metadata or {},
         }
         self._documents.append(doc)
+        self._bm25_dirty = True
 
         if self._index is not None:
             embedding = self.get_embedding(content)
@@ -182,6 +263,77 @@ class LongTermMemory:
             doc = self._documents[idx].copy()
             doc["score"] = float(score)
             results.append(doc)
+
+        return results
+
+    def _rebuild_bm25(self) -> None:
+        """（重建）BM25 索引，与 _documents 保持同步。"""
+        corpus = [_tokenize_text(doc.get("content", "")) for doc in self._documents]
+        if _HAS_RANK_BM25:
+            self._bm25 = BM25Okapi(corpus)
+        else:
+            self._bm25 = _SimpleBM25(corpus)
+        self._bm25_dirty = False
+
+    def hybrid_search(self, query: str, top_k: int = 5, fusion_k: int = 60) -> list[dict]:
+        """
+        双路混合召回：向量检索（FAISS / 关键词兜底）+ BM25，RRF 融合排序。
+
+        返回的每个文档附带：
+        - score: RRF 融合分数
+        - vector_score: 向量路分数（存在时）
+        - bm25_score: BM25 分数（存在时）
+        - matched_by: 命中的召回路列表 ["vector", "bm25"]
+        """
+        # 1) 向量召回
+        vector_docs = self.search(query, top_k=top_k)
+
+        # 2) BM25 召回
+        if self._bm25 is None or self._bm25_dirty:
+            self._rebuild_bm25()
+        bm25_scores = self._bm25.get_scores(_tokenize_text(query))
+        bm25_ranked = sorted(
+            range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True
+        )
+        bm25_docs: list[dict] = []
+        for i in bm25_ranked:
+            if bm25_scores[i] <= 0:
+                continue
+            doc = dict(self._documents[i])
+            doc["bm25_score"] = float(bm25_scores[i])
+            bm25_docs.append(doc)
+            if len(bm25_docs) >= top_k:
+                break
+
+        # 3) RRF 融合
+        rrf: dict[str, float] = {}
+        doc_pool: dict[str, dict] = {}
+
+        for rank, d in enumerate(vector_docs):
+            key = d.get("id") or d.get("content", "")
+            rrf[key] = rrf.get(key, 0.0) + 1.0 / (fusion_k + rank + 1)
+            merged = dict(d)
+            merged["vector_score"] = float(d.get("score", 0.0))
+            merged["matched_by"] = ["vector"]
+            doc_pool.setdefault(key, merged)
+
+        for rank, d in enumerate(bm25_docs):
+            key = d.get("id") or d.get("content", "")
+            rrf[key] = rrf.get(key, 0.0) + 1.0 / (fusion_k + rank + 1)
+            if key in doc_pool:
+                doc_pool[key]["bm25_score"] = d["bm25_score"]
+                doc_pool[key]["matched_by"].append("bm25")
+            else:
+                merged = dict(d)
+                merged["matched_by"] = ["bm25"]
+                doc_pool[key] = merged
+
+        ranked = sorted(rrf.items(), key=lambda kv: kv[1], reverse=True)
+        results: list[dict] = []
+        for key, score in ranked[:top_k]:
+            out = dict(doc_pool[key])
+            out["score"] = float(score)
+            results.append(out)
 
         return results
 

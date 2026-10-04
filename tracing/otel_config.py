@@ -153,6 +153,9 @@ class AgentMetrics:
         self._call_counts: dict[str, int] = {}
         self._total_duration: dict[str, float] = {}
         self._error_counts: dict[str, int] = {}
+        # Token 计量（按 Agent 维度累计）
+        self._total_input_tokens: dict[str, int] = {}
+        self._total_output_tokens: dict[str, int] = {}
 
     def record_call(self, agent_name: str, duration_ms: float, success: bool):
         self._call_counts[agent_name] = self._call_counts.get(agent_name, 0) + 1
@@ -160,15 +163,25 @@ class AgentMetrics:
         if not success:
             self._error_counts[agent_name] = self._error_counts.get(agent_name, 0) + 1
 
+    def record_tokens(self, agent_name: str, input_tokens: int, output_tokens: int = 0):
+        """累计某 Agent 的输入/输出 Token 数（计量入口，供压缩效果评估）"""
+        self._total_input_tokens[agent_name] = self._total_input_tokens.get(agent_name, 0) + max(input_tokens, 0)
+        self._total_output_tokens[agent_name] = self._total_output_tokens.get(agent_name, 0) + max(output_tokens, 0)
+
     def get_summary(self) -> dict[str, Any]:
         summary = {}
         for agent_name in self._call_counts:
             calls = self._call_counts[agent_name]
             total_ms = self._total_duration[agent_name]
             errors = self._error_counts.get(agent_name, 0)
+            input_tokens = self._total_input_tokens.get(agent_name, 0)
+            output_tokens = self._total_output_tokens.get(agent_name, 0)
             summary[agent_name] = {
                 "total_calls": calls,
                 "avg_duration_ms": total_ms / calls if calls > 0 else 0,
                 "error_rate": errors / calls if calls > 0 else 0,
+                "total_input_tokens": input_tokens,
+                "total_output_tokens": output_tokens,
+                "avg_input_tokens": input_tokens / calls if calls > 0 else 0,
             }
         return summary

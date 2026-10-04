@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -16,6 +17,17 @@ from memory.long_term import LongTermMemory
 from tracing.otel_config import trace_agent_call
 
 logger = logging.getLogger(__name__)
+
+# 重排序使用 cross-encoder reranker（如 bge-reranker-base）；不可用时回退到 LLM 重排
+RERANK_MODEL_NAME = os.getenv(
+    "RERANK_MODEL_NAME",
+    "BAAI/bge-reranker-base",
+)
+try:
+    from sentence_transformers import CrossEncoder
+    _HAS_CROSS_ENCODER = True
+except ImportError:
+    _HAS_CROSS_ENCODER = False
 
 
 RAG_SYSTEM_PROMPT = """你是一个专业的知识库问答Agent，负责根据检索到的文档回答用户问题。
@@ -48,6 +60,14 @@ class KnowledgeRAGAgent:
         self.llm = llm
         self.long_term_memory = long_term_memory or LongTermMemory()
         self.mcp_server = mcp_server
+        self._reranker = None
+        if _HAS_CROSS_ENCODER:
+            try:
+                self._reranker = CrossEncoder(RERANK_MODEL_NAME, max_length=512)
+                logger.info("[RAG] 加载 reranker 模型: %s", RERANK_MODEL_NAME)
+            except Exception as e:
+                logger.warning("[RAG] reranker 模型加载失败（%s），回退到 LLM 重排", e)
+                self._reranker = None
 
     @trace_agent_call("rag_query_rewrite")
     async def rewrite_query(self, original_query: str) -> str:
@@ -66,9 +86,9 @@ class KnowledgeRAGAgent:
         """从向量数据库检索相关文档（优先使用MCP工具）"""
         logger.info("[RAG] Step 2/4: 向量检索 — 查询: %s, top_k=%d", query[:50], top_k)
 
-        # 优先通过MCP工具搜索知识库
+        # 优先通过MCP工具搜索知识库（混合召回）
         if self.mcp_server:
-            logger.info("[RAG] Step 2/4: 调用MCP工具 knowledge_search")
+            logger.info("[RAG] Step 2/4: 调用MCP工具 knowledge_search（BM25+向量混合召回）")
             result = await self.mcp_server.call_tool("knowledge_search", {
                 "query": query,
                 "top_k": top_k,
@@ -80,22 +100,52 @@ class KnowledgeRAGAgent:
             else:
                 logger.warning("[RAG] Step 2/4: MCP工具调用失败: %s", result.error)
 
-        # 兜底：使用FAISS向量检索
-        logger.info("[RAG] Step 2/4: 使用FAISS向量检索")
-        docs = self.long_term_memory.search(query, top_k=top_k)
-        logger.info("[RAG] Step 2/4: FAISS检索到 %d 个文档", len(docs))
+        # 兜底：本地 BM25 + 向量双路召回
+        logger.info("[RAG] Step 2/4: 使用本地 FAISS + BM25 混合召回")
+        docs = self.long_term_memory.hybrid_search(query, top_k=top_k)
+        logger.info("[RAG] Step 2/4: 混合召回 %d 个文档", len(docs))
         return docs
 
     @trace_agent_call("rag_rerank")
     async def rerank_documents(
         self, query: str, documents: list[dict], top_k: int = 3
     ) -> list[dict]:
-        """对检索结果重排序，提升相关性"""
+        """对检索结果重排序，提升相关性。
+
+        优先使用 cross-encoder reranker（精排）；不可用时回退到 LLM 重排。
+        """
         if not documents:
             logger.info("[RAG] Step 3/4: 文档重排序 — 无文档，跳过")
             return []
 
         logger.info("[RAG] Step 3/4: 文档重排序 — 对 %d 个文档重排序", len(documents))
+
+        contents = [doc.get("content", "") for doc in documents]
+
+        if self._reranker is not None:
+            try:
+                pairs = [[query, c] for c in contents]
+                scores = self._reranker.predict(pairs)
+                ranked = [
+                    (float(score), i)
+                    for i, score in enumerate(scores)
+                ]
+                ranked.sort(key=lambda x: x[0], reverse=True)
+                reranked = []
+                for score, i in ranked[:top_k]:
+                    doc = dict(documents[i])
+                    doc["rerank_score"] = score
+                    reranked.append(doc)
+                logger.info("[RAG] Step 3/4: cross-encoder 精排选出 %d 个文档", len(reranked))
+                return reranked
+            except Exception as e:
+                logger.warning("[RAG] cross-encoder 重排失败（%s），回退到 LLM 重排", e)
+
+        return await self._llm_rerank(query, documents, top_k)
+
+    @trace_agent_call("rag_llm_rerank")
+    async def _llm_rerank(self, query: str, documents: list[dict], top_k: int = 3) -> list[dict]:
+        """LLM 重排（fallback）：返回最相关文档的索引。"""
         doc_summaries = "\n".join(
             f"[{i}] {doc.get('content', '')[:200]}"
             for i, doc in enumerate(documents)
@@ -114,11 +164,11 @@ class KnowledgeRAGAgent:
 
         try:
             indices = [int(i.strip()) for i in response.content.split(",")]
-            reranked = [documents[i] for i in indices if i < len(documents)]
+            reranked = [dict(documents[i]) for i in indices if i < len(documents)]
         except (ValueError, IndexError):
-            reranked = documents[:top_k]
+            reranked = [dict(d) for d in documents[:top_k]]
 
-        logger.info("[RAG] Step 3/4: 文档重排序 — 选出 %d 个文档", len(reranked))
+        logger.info("[RAG] Step 3/4: LLM 重排选出 %d 个文档", len(reranked))
         return reranked
 
     @trace_agent_call("rag_generate")

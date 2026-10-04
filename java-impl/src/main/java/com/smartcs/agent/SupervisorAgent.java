@@ -1,12 +1,16 @@
 package com.smartcs.agent;
 
+import com.alibaba.cloud.ai.graph.CompileConfig;
 import com.alibaba.cloud.ai.graph.CompiledGraph;
 import com.alibaba.cloud.ai.graph.GraphRepresentation;
 import com.alibaba.cloud.ai.graph.KeyStrategyFactory;
 import com.alibaba.cloud.ai.graph.OverAllState;
+import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.StateGraph;
 import com.alibaba.cloud.ai.graph.action.AsyncEdgeAction;
 import com.alibaba.cloud.ai.graph.action.AsyncNodeAction;
+import com.alibaba.cloud.ai.graph.checkpoint.config.SaverConfig;
+import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
 import com.alibaba.cloud.ai.graph.state.strategy.ReplaceStrategy;
 import com.smartcs.tracing.AgentTracer;
 import org.slf4j.Logger;
@@ -62,6 +66,8 @@ public class SupervisorAgent {
     private final AgentTracer tracer;
 
     private volatile CompiledGraph compiledGraph;
+    /** 断点续接存储 — 对齐 Python LangGraph MemorySaver（按 thread_id=sessionId 保存每步状态）。 */
+    private final MemorySaver checkpointer = MemorySaver.builder().build();
 
     public SupervisorAgent(
             ChatClient.Builder chatClientBuilder,
@@ -105,8 +111,10 @@ public class SupervisorAgent {
             graph.addEdge("compliance_check", "synthesize");
             graph.addEdge("synthesize", StateGraph.END);
 
-            this.compiledGraph = graph.compile();
-            log.info("[SupervisorGraph] 编排图构建完成: decompose -> intent -> dispatch<->collect 循环 -> compliance -> synthesize");
+            this.compiledGraph = graph.compile(CompileConfig.builder()
+                    .saverConfig(SaverConfig.builder().register(checkpointer).build())
+                    .build());
+            log.info("[SupervisorGraph] 编排图构建完成（含 MemorySaver checkpointer）: decompose -> intent -> dispatch<->collect 循环 -> compliance -> synthesize");
         } catch (Exception e) {
             throw new IllegalStateException("构建 Supervisor 状态图失败", e);
         }
@@ -118,7 +126,11 @@ public class SupervisorAgent {
     public AgentState orchestrate(AgentState state) {
         return tracer.trace("supervisor", "orchestrate", () -> {
             try {
-                Optional<OverAllState> out = compiledGraph.invoke(Map.of(STATE_KEY, state));
+                // 断点续接：以 sessionId 作为 thread_id（对齐 Python config={"configurable": {"thread_id": session_id}}）
+                RunnableConfig config = RunnableConfig.builder()
+                        .threadId(state.getSessionId() != null ? state.getSessionId() : "default")
+                        .build();
+                Optional<OverAllState> out = compiledGraph.invoke(Map.of(STATE_KEY, state), config);
                 OverAllState finalState = out.orElseThrow(
                         () -> new IllegalStateException("编排图执行未返回最终状态"));
                 AgentState result = finalState.value(STATE_KEY, (AgentState) null);
@@ -139,6 +151,18 @@ public class SupervisorAgent {
             return rep.content();
         } catch (Exception e) {
             return "diagram unavailable: " + e.getMessage();
+        }
+    }
+
+    /** 断点续接信息：某个 sessionId(thread) 已保存的 checkpoint 数（用于验收/运维）。 */
+    public int checkpointCount(String sessionId) {
+        try {
+            RunnableConfig config = RunnableConfig.builder()
+                    .threadId(sessionId != null ? sessionId : "default")
+                    .build();
+            return checkpointer.list(config).size();
+        } catch (Exception e) {
+            return -1;
         }
     }
 

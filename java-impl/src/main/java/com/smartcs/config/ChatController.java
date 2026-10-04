@@ -240,4 +240,15 @@ public class ChatController {
     public ResponseEntity<Map<String, Object>> getMetrics() {
         return ResponseEntity.ok(Map.of("agent_metrics", tracer.getMetricsSummary()));
     }
+
+    /** 断点续接信息：某会话已保存的 checkpoint 数（MemorySaver，对齐 Python thread_id） */
+    @GetMapping("/checkpoint/{sessionId}")
+    public ResponseEntity<Map<String, Object>> checkpointInfo(@PathVariable String sessionId) {
+        int count = supervisor.checkpointCount(sessionId);
+        return ResponseEntity.ok(Map.of(
+                "session_id", sessionId,
+                "checkpoint_count", count,
+                "saver", "MemorySaver"
+        ));
+    }
 }

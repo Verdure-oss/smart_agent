@@ -13,7 +13,7 @@
 | 记忆 | 短期：Redis（自动降级内存）+ 滚动摘要；长期：BM25 + TF向量 + RRF 混合检索；工作记忆：进程内 |
 | 持久化 | SQLite（`org.xerial:sqlite-jdbc`，`data/smartcs.db`） |
 | 合规 | 规则引擎（禁词/PII）+ LLM 深度二阶段审查 + PII 脱敏回传 |
-| 指标 | AgentTracer（自带耗时/成功率/**token 计量**，可平滑接 OTel） |
+| 指标/追踪 | AgentTracer（耗时/成功率/**token 计量** + **OpenTelemetry span**，OTel exporter 可配） |
 
 ## 快速开始
 
@@ -40,6 +40,7 @@ export SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL=gpt-6-luna
 | GET | `/api/history/{sessionId}` | 会话历史 |
 | GET/POST | `/api/tools` / `/api/tools/call` | MCP 工具发现 / 调用 |
 | GET | `/api/metrics` | Agent 指标（含 token） |
+| GET | `/api/checkpoint/{sessionId}` | MemorySaver 断点续接信息（对齐 Python thread_id） |
 | GET | `/health` | 健康检查（根路径，与前端契约一致） |
 
 ## 编排架构（StateGraph）
@@ -69,7 +70,8 @@ START → decompose → intent_router → dispatch_step ⇄ collect_step(条件�
 ### 差异/说明
 - 向量路用 **TF 向量**近似（纯本地零依赖），RRF 接口与真实 embedding（Spring AI / Milvus）平滑兼容
 - Supervisor decompose 走 `BeanOutputConverter`（prompt 内嵌 schema，规避网关 json_schema 兼容问题，与 Python 踩坑结论一致）
-- 追踪未接 OTel 导出（AgentTracer 日志 + metric，含 token 计量）
+- 追踪已接 **OpenTelemetry**（span + traceId + token 属性；配 `OTEL_EXPORTER_OTLP_ENDPOINT` 走 OTLP，缺省降级日志导出）
+- 编排已接 **MemorySaver Checkpoint**（sessionId=thread_id，每步一个 checkpoint，`GET /api/checkpoint/{sessionId}` 可见）
 - 工单/订单存 SQLite（`data/`），Python 版存 `database/app.db`，部署需各自建库
 
 ## 阶段落地记录

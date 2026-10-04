@@ -1,9 +1,12 @@
 # 🤖 智能客服多Agent系统
 
-> **当前仓库聚焦 Python + FastAPI 实现**，并补充了本地前后端联调页面与配套面试材料，方便你直接上手调试完整链路。
+> **双语言实现：Python (LangGraph + FastAPI) 主线 + Java (Spring AI Alibaba Graph + Spring Boot) 完整复刻**，并补充本地前后端联调页面与配套面试材料，方便你直接上手调试完整链路。
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![Java](https://img.shields.io/badge/Java-21-orange?logo=openjdk)](https://openjdk.org/)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.5.9-6DB33F?logo=spring)](https://spring.io/projects/spring-boot)
+[![Spring AI](https://img.shields.io/badge/Spring%20AI-1.1.2-6DB33F?logo=spring)](https://spring.io/projects/spring-ai)
 [![React](https://img.shields.io/badge/React-18-blue?logo=react)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-5-646CFF?logo=vite)](https://vitejs.dev/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.3+-green)](https://github.com/langchain-ai/langgraph)
@@ -34,7 +37,8 @@
 **这个项目能帮你做什么？**
 
 - ✅ **面试加分项**：拥有一个真实完整的多Agent项目，不再只是CRUD
-- ✅ **Python主线清晰**：当前仓库直接保留可运行的 Python 后端实现
+- ✅ **Python主线清晰**：当前仓库保留可运行的 Python 后端实现（LangGraph + FastAPI）
+- ✅ **Java版完整复刻**：`java-impl/` 用 Spring AI Alibaba Graph 平移相同拓扑，编排/记忆/RAG/合规全对齐
 - ✅ **联调闭环完整**：新增 `frontend/` 聊天页面，方便前后端一起调试
 - ✅ **面试材料齐全**：简历模板、STAR话术、八股文题库一应俱全
 - ✅ **学习参考**：代码有详细注释，架构文档有图文说明
@@ -217,9 +221,22 @@
 | 模块 | 当前状态 | 说明 |
 |------|----------|------|
 | Python 后端 | ✅ 已在仓库根目录 | LangGraph + FastAPI，多Agent 主链路 |
+| Java 后端 | ✅ [`java-impl/`](./java-impl/) | Spring AI Alibaba Graph + Spring Boot 3.5.9，Python 拓扑完整平移 |
 | 前端联调 | ✅ 新增 [`frontend/`](./frontend/) | React + Vite 聊天页，直接复用现有 API |
 | Docker | ⏸️ 已移除 | Docker 相关配置已清理，如需可自行添加 |
-| Java / Go | ⏸️ 当前分支未包含 | 旧路径已从启动说明中移除，避免误导 |
+| Go | ⏸️ 未包含 | 如需可用 Eino 复刻，架构文档已给出思路 |
+
+### Java 版（java-impl/）速览
+
+- **编排**：`StateGraph` 平移 Python 拓扑 —— `decompose → intent_router → dispatch_step ⇄ collect_step（条件边循环，依赖满足或迭代上限）→ compliance_check → synthesize`
+- **记忆**：混合检索（BM25 + TF向量 + RRF，纯本地零依赖）+ 滚动摘要按需注入（长会话 Token 节省实测 0→50%）+ 工作记忆
+- **RAG**：Query 改写 / 引用来源标注 / 无文档兜底
+- **MCP**：`order_query` / `ticket_create` / `risk_check` / `knowledge_search` 四工具真实逻辑 + `POST /api/tools/call`
+- **合规**：规则引擎（禁词+PII脱敏）+ LLM 二阶段审查（含产品条款豁免），结果经 `masked_response` 回传 synthesize
+- **持久化**：SQLite（`data/smartcs.db`），工单/订单重启不丢
+- **检索评测**（24 样本，同 Python `eval/dataset_v2.json` 同库）：ContextP **88.89%** / ContextR **88.89%** / MRR **0.9514** / Hit@3 **100%**
+
+> 完整 Java 版说明见 [`java-impl/README.md`](./java-impl/README.md)。
 
 ---
 
@@ -268,6 +285,27 @@ npm run dev
 
 默认情况下，前端会通过 Vite 开发代理把 `/api` 和 `/health` 转发到 `http://localhost:8000`，因此不需要改现有 FastAPI 路由。
 
+### 方式三：启动 Java 版后端（Spring AI）
+
+前置：JDK 21。复制根 `.env` 到 java-impl 同级即可读取（脚本自动读取仓库根 `.env` 的 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `MODEL_NAME`）。
+
+```powershell
+cd java-impl
+# 使用自带 Maven Wrapper（自动下载 3.9.9）；如需代理先设置
+# $env:MAVEN_OPTS="-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7890 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7890"
+./mvnw.cmd -B -ntp package -DskipTests
+java -jar target\smart-cs-agent-1.0.0.jar --server.port=18080
+```
+
+访问：
+
+- 健康检查: `http://localhost:18080/health`
+- 聊天接口: `POST http://localhost:18080/api/chat`
+- 工具接口: `POST http://localhost:18080/api/tools/call`、`GET /api/tools`
+- 指标接口: `GET http://localhost:18080/api/metrics`
+
+> Java 版冒烟验收脚本已内置：`boot-smoke.ps1`（启动）、`chat-smoke.ps1`（3轮真实对话）、`chat-smoke-st2.ps1`（8轮长会话+压缩）、`tools-smoke.ps1`（4工具）、`persistence-smoke.ps1`（重启持久化）。
+
 ---
 
 ## 📁 项目结构
@@ -288,6 +326,11 @@ smart-cs-multi-agent/
 │   ├── package.json
 │   ├── vite.config.ts
 │   └── src/
+├── java-impl/                      ← Java 版完整复刻（Spring AI Alibaba Graph）
+│   ├── pom.xml                     ← Spring Boot 3.5.9 + Spring AI 1.1.2 + graph-core
+│   ├── README.md                   ← Java 版说明（架构/API/对齐差异/阶段记录）
+│   ├── src/main/java/com/smartcs/  ← agent / memory / mcp / biz / tracing / config
+│   └── *-smoke.ps1                 ← boot / chat / tools / persistence 冒烟验收脚本
 ├── docs/                           ← 项目文档
 │   ├── deployment.md               ← 当前部署与联调指南
 │   ├── 架构.md                     ← 系统架构说明
@@ -398,6 +441,7 @@ order_query_tool = {
 | **架构设计文档** | 完整流程图、时序图、技术选型对比分析 | [查看](./docs/架构.md) |
 | **代码讲解文档** | 核心模块逐行解析，设计模式说明 | [查看](./docs/核心代码讲解.md) |
 | **部署指南** | 本地启动、前后端联调、环境变量配置 | [查看](./docs/deployment.md) |
+| **Java版说明** | Spring AI Alibaba Graph 编排平移、排坑记录、评测结果 | [查看](./java-impl/README.md) |
 
 ### 常见面试问题预览
 

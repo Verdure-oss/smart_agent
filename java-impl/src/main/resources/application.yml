@@ -26,6 +26,12 @@ spring:
 
 # 自定义配置
 smartcs:
+  db:
+    # 存储方言：sqlite（默认，本地零依赖）| mysql（生产）；MySQL 需同时设 url/username/password
+    type: ${SMARTCS_DB_TYPE:sqlite}
+    url: ${SMARTCS_DB_URL:}
+    username: ${SMARTCS_DB_USERNAME:root}
+    password: ${SMARTCS_DB_PASSWORD:}
   memory:
     short-term:
       max-turns: 20

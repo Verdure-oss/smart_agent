@@ -11,7 +11,7 @@
 | LLM 接入 | Spring AI 1.1.2（`spring-ai-starter-model-openai`，OpenAI 兼容网关） |
 | 编排引擎 | `com.alibaba.cloud.ai:spring-ai-alibaba-graph-core:1.1.2.4-security-fix`（StateGraph / OverAllState / CompiledGraph / KeyStrategy） |
 | 记忆 | 短期：Redis（自动降级内存）+ 滚动摘要；长期：BM25 + TF向量 + RRF 混合检索；工作记忆：进程内 |
-| 持久化 | SQLite（`org.xerial:sqlite-jdbc`，`data/smartcs.db`） |
+| 持久化 | SQLite（本地零部署）/ MySQL（生产可切换，`SMARTCS_DB_TYPE=mysql`，方言层统一 DDL/INSERT） |
 | 合规 | 规则引擎（禁词/PII）+ LLM 深度二阶段审查 + PII 脱敏回传 |
 | 指标/追踪 | AgentTracer（耗时/成功率/**token 计量** + **OpenTelemetry span**，OTel exporter 可配） |
 

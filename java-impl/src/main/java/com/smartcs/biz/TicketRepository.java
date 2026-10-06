@@ -4,14 +4,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -21,8 +16,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 工单存储 — SQLite 持久化（阶段 6：从内存 ConcurrentHashMap 迁移）。
- * - 数据文件 ./data/smartcs.db（对齐 Python 版 database/ 目录），目录不存在自动创建
+ * 工单存储 — 经 StorageDialect 方言层，SQLite（本地）或 MySQL（生产）可切换。
  * - 启动建表 tickets（幂等）
  * - 重启后数据仍在（持久化实证）
  */
@@ -31,39 +25,24 @@ public class TicketRepository {
 
     private static final Logger log = LoggerFactory.getLogger(TicketRepository.class);
 
-    private static final String DB_PATH = "data/smartcs.db";
-    private static final String URL = "jdbc:sqlite:" + DB_PATH;
+    private final StorageDialect dialect;
 
-    public TicketRepository() {
+    public TicketRepository(StorageDialect dialect) {
+        this.dialect = dialect;
         init();
     }
 
     private void init() {
-        try {
-            Path dir = Paths.get("data");
-            if (!Files.exists(dir)) {
-                Files.createDirectories(dir);
-            }
-            try (Connection conn = connect(); Statement st = conn.createStatement()) {
-                st.executeUpdate("""
-                        CREATE TABLE IF NOT EXISTS tickets (
-                            ticket_id   TEXT PRIMARY KEY,
-                            user_id     TEXT NOT NULL,
-                            description TEXT NOT NULL,
-                            priority    TEXT NOT NULL DEFAULT 'medium',
-                            status      TEXT NOT NULL DEFAULT 'created',
-                            created_at  TEXT NOT NULL
-                        )
-                        """);
-            }
-            log.info("[TicketRepository] SQLite 就绪: {}", Paths.get(DB_PATH).toAbsolutePath());
+        try (Connection conn = dialect.connect()) {
+            dialect.createTables(conn);
+            log.info("[TicketRepository] {} 就绪", dialect.type());
         } catch (Exception e) {
-            throw new IllegalStateException("SQLite 初始化失败", e);
+            throw new IllegalStateException("存储初始化失败", e);
         }
     }
 
     private Connection connect() throws Exception {
-        return DriverManager.getConnection(URL);
+        return dialect.connect();
     }
 
     public String create(String userId, String description, String priority) {

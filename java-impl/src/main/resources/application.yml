@@ -32,6 +32,9 @@ smartcs:
     url: ${SMARTCS_DB_URL:}
     username: ${SMARTCS_DB_USERNAME:root}
     password: ${SMARTCS_DB_PASSWORD:}
+  vector:
+    # 向量召回后端：memory（默认，TF 近似零依赖）| milvus（生产，需 Milvus+embedding）
+    backend: ${SMARTCS_VECTOR_BACKEND:memory}
   memory:
     short-term:
       max-turns: 20

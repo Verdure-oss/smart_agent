@@ -3,6 +3,7 @@ package com.smartcs.eval;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartcs.memory.LongTermMemoryService;
+import com.smartcs.memory.TfVectorRetriever;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -35,7 +36,7 @@ public class RetrievalEval {
         int total = qaPairs.size();
         int topK = 3;
 
-        LongTermMemoryService memory = new LongTermMemoryService();
+        LongTermMemoryService memory = new LongTermMemoryService(new TfVectorRetriever());
 
         double precisionSum = 0, recallSum = 0, mrrSum = 0;
         int hitCount = 0;

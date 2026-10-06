@@ -72,7 +72,7 @@ START → decompose → intent_router → dispatch_step ⇄ collect_step(条件�
   - **知识入库流水线**：扫描 `knowledge_base/` 目录（子目录=分类），`.md/.txt` 直读 + Apache Tika 解析 PDF/Word/HTML/RTF，512 字符切块 128 重叠，目录为空回退内置 24 篇
 
 ### 差异/说明
-- 向量路用 **TF 向量**近似（纯本地零依赖），RRF 接口与真实 embedding（Spring AI / Milvus）平滑兼容
+- 向量路通过 **VectorRetriever SPI** 抽象：默认 `memory-tf`（2-gram TF 余弦，纯本地零依赖）；生产切 `SMARTCS_VECTOR_BACKEND=milvus` 用 Spring AI `MilvusVectorStore`（需 Milvus + embedding），BM25+RRF 上层逻辑不变
 - Supervisor decompose 走 `BeanOutputConverter`（prompt 内嵌 schema，规避网关 json_schema 兼容问题，与 Python 踩坑结论一致）
 - 追踪已接 **OpenTelemetry**（span + traceId + token 属性；配 `OTEL_EXPORTER_OTLP_ENDPOINT` 走 OTLP，缺省降级日志导出）
 - 编排已接 **MemorySaver Checkpoint**（sessionId=thread_id，每步一个 checkpoint，`GET /api/checkpoint/{sessionId}` 可见）

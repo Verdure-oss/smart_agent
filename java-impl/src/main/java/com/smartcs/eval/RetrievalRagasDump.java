@@ -3,6 +3,7 @@ package com.smartcs.eval;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartcs.memory.LongTermMemoryService;
+import com.smartcs.memory.TfVectorRetriever;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -34,7 +35,7 @@ public class RetrievalRagasDump {
         JsonNode root = mapper.readTree(in);
         JsonNode qaPairs = root.get("qa_pairs");
 
-        LongTermMemoryService memory = new LongTermMemoryService();
+        LongTermMemoryService memory = new LongTermMemoryService(new TfVectorRetriever());
 
         List<Map<String, Object>> records = new ArrayList<>();
         for (JsonNode qa : qaPairs) {

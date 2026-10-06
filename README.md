@@ -160,7 +160,7 @@ content ──→ 规则引擎(禁词/PII, <2ms) ──通过──→ LLM 深�
 | 编排 | Spring AI Alibaba Graph `StateGraph` | LangGraph `StateGraph` |
 | 拓扑 | decompose→intent→dispatch⇄collect→compliance→synthesize | 同拓扑 |
 | 短期记忆 | Redis StringRedisTemplate（降级内存） | Redis AIORedis（降级内存） |
-| 长期检索 | BM25 + TF 向量 + RRF（纯本地近似向量） | BM25(jieba) + FAISS + sentence-transformers + RRF |
+| 长期检索 | BM25 + 向量 + RRF（**VectorRetriever SPI**，默认 memory-tf，可切 Milvus） | BM25(jieba) + FAISS + sentence-transformers + RRF |
 | 重排 | LLM rerank（对齐 Python `_llm_rerank`） | bge-reranker-base（无模型降级 LLM） |
 | 工具层 | MCP 风格工具 + **Function Calling** | MCP 工具 + 硬编码分发 |
 | 风控 | 金额规则 + **Redis 滑动窗口** | 金额规则 |
@@ -297,7 +297,7 @@ $env:PYTHONPATH="D:\code\smart-cs-multi-agent"
 
 诚实清单（面试主动说出来加分）：
 
-1. **向量路是 TF 近似**，非真实 embedding：小库上够用，生产换 Spring AI embedding / Milvus，RRF 接口不变。
+1. **向量路默认是 TF 近似**，非真实 embedding：小库上够用，生产切真实 embedding + Milvus（`VectorRetriever` SPI，`SMARTCS_VECTOR_BACKEND=milvus`），RRF 接口不变。
 2. **MySQL 分支语法正确、可切换**，但未在真实 MySQL 实例冒烟（本地无 MySQL）。
 3. **Supervisor decompose 的 token 计量为 0**（BeanOutputConverter 路径拿不到 usage），其余 Agent 计量完整。
 4. **编排为串行循环**：并行调度与 Human-in-the-Loop 能力已铺垫（dispatch_mode / Checkpoint），当前按依赖串行执行。

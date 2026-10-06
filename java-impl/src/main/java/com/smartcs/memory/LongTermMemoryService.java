@@ -35,11 +35,14 @@ public class LongTermMemoryService {
     private static final double BM25_B = 0.75;
 
     private final List<Map<String, Object>> documents = new ArrayList<>();
-    private final List<Map<String, Double>> docTf = new ArrayList<>();     // 每篇文档的 2-gram 词频
     private final Map<String, Integer> df = new HashMap<>();                // 每个 gram 的文档频率
     private double avgDocLen = 0.0;
 
-    public LongTermMemoryService() {
+    /** 向量召回路（VECTOR RETRIEVER SPI）：默认 TF 内存近似，可切换 Milvus。 */
+    private final VectorRetriever vectorRetriever;
+
+    public LongTermMemoryService(VectorRetriever vectorRetriever) {
+        this.vectorRetriever = vectorRetriever;
         loadKnowledgeBase();
         rebuildIndex();
     }
@@ -189,20 +192,19 @@ public class LongTermMemoryService {
         documents.add(doc);
     }
 
-    /** 重新构建分词索引（新增文档后调用） */
+    /** 重新构建分词索引（新增文档后调用）：重建 BM25 词典 + 把文档下沉给向量 retriever。 */
     public void rebuildIndex() {
-        docTf.clear();
         df.clear();
         long totalLen = 0;
         for (Map<String, Object> doc : documents) {
             Map<String, Double> tf = tokenize((String) doc.get("content"));
-            docTf.add(tf);
             totalLen += tf.values().stream().mapToDouble(Double::doubleValue).sum();
             for (String g : tf.keySet()) {
                 df.merge(g, 1, Integer::sum);
             }
         }
         avgDocLen = documents.isEmpty() ? 0.0 : (double) totalLen / documents.size();
+        vectorRetriever.load(documents);
     }
 
     /**
@@ -226,30 +228,33 @@ public class LongTermMemoryService {
         if (queryTf.isEmpty()) {
             return List.of();
         }
-        double queryNorm = norm(queryTf);
         int n = documents.size();
 
-        // 1) BM25 打分
+        // 1) BM25 打分（key=文档 UUID id）
         Map<String, Double> bm25Scores = new HashMap<>();
         for (int i = 0; i < n; i++) {
-            double score = bm25(queryTf, docTf.get(i), n);
-            bm25Scores.put(docId(i), score);
+            String id = (String) documents.get(i).get("id");
+            double score = bm25(queryTf, tokenize((String) documents.get(i).get("content")), n);
+            bm25Scores.put(id, score);
         }
 
-        // 2) TF 向量余弦
+        // 2) 向量召回（VECTOR RETRIEVER SPI：默认 memory-tf，可切换 Milvus）
         Map<String, Double> vecScores = new HashMap<>();
-        for (int i = 0; i < n; i++) {
-            double score = cosine(queryTf, queryNorm, docTf.get(i));
-            vecScores.put(docId(i), score);
+        for (Map<String, Object> vecDoc : vectorRetriever.search(query, n)) {
+            Object idObj = vecDoc.get("id");
+            String id = idObj != null ? String.valueOf(idObj) : null;
+            if (id == null) continue;
+            double s = ((Number) vecDoc.getOrDefault("vector_score", 0.0)).doubleValue();
+            vecScores.put(id, s);
         }
 
         // 3) RRF 融合
-        List<String> bm25Ranked = rankByScore(bm25Scores);
-        List<String> vecRanked = rankByScore(vecScores);
         Map<String, Double> rrf = new HashMap<>();
+        List<String> bm25Ranked = rankByScore(bm25Scores);
         for (int i = 0; i < bm25Ranked.size(); i++) {
             rrf.merge(bm25Ranked.get(i), 1.0 / (RRF_K + i + 1), Double::sum);
         }
+        List<String> vecRanked = rankByScore(vecScores);
         for (int i = 0; i < vecRanked.size(); i++) {
             rrf.merge(vecRanked.get(i), 1.0 / (RRF_K + i + 1), Double::sum);
         }
@@ -278,24 +283,6 @@ public class LongTermMemoryService {
             score += idf * tf * (BM25_K1 + 1) / denom;
         }
         return score;
-    }
-
-    // ---------- TF 向量余弦 ----------
-
-    private double cosine(Map<String, Double> qTf, double qNorm, Map<String, Double> dTf) {
-        if (qNorm == 0.0 || dTf.isEmpty()) return 0.0;
-        double dot = 0.0;
-        for (Map.Entry<String, Double> q : qTf.entrySet()) {
-            Double dv = dTf.get(q.getKey());
-            if (dv != null) dot += q.getValue() * dv;
-        }
-        return dot / (qNorm * norm(dTf));
-    }
-
-    private double norm(Map<String, Double> tf) {
-        double sum = 0.0;
-        for (double v : tf.values()) sum += v * v;
-        return Math.sqrt(sum);
     }
 
     private Map<String, Double> tokenize(String text) {
@@ -342,13 +329,12 @@ public class LongTermMemoryService {
                 .collect(Collectors.toList());
     }
 
-    private String docId(int i) {
-        return String.valueOf(i);
-    }
-
-    private Map<String, Object> toResult(String docIdx) {
-        Map<String, Object> doc = documents.get(Integer.parseInt(docIdx));
-        Map<String, Object> result = new HashMap<>(doc);
-        return result;
+    private Map<String, Object> toResult(String docId) {
+        for (Map<String, Object> doc : documents) {
+            if (docId.equals(doc.get("id"))) {
+                return new HashMap<>(doc);
+            }
+        }
+        return null;
     }
 }

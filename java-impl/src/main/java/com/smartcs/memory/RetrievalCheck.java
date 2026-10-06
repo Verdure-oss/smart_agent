@@ -10,7 +10,7 @@ import java.util.Map;
 public class RetrievalCheck {
 
     public static void main(String[] args) {
-        LongTermMemoryService svc = new LongTermMemoryService();
+        LongTermMemoryService svc = new LongTermMemoryService(new TfVectorRetriever());
         String[] queries = {
                 "金葵理财的收益率是多少",
                 "金葵理财最低要投多少钱",

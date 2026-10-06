@@ -72,6 +72,12 @@
             <version>${spring-ai-alibaba.version}</version>
         </dependency>
 
+        <!-- Spring AI Milvus 向量存储（可选：向量后端可切换 memory / milvus） -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-milvus-store</artifactId>
+        </dependency>
+
         <!-- SQLite 持久化（工单/订单，零部署、与 Python 版 SQLite 对齐） -->
         <dependency>
             <groupId>org.xerial</groupId>

@@ -1,9 +1,21 @@
 package com.smartcs.memory;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 
+import java.io.File;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.AutoDetectParser;
+import org.apache.tika.sax.BodyContentHandler;
 
 /**
  * 长期记忆服务 — 混合检索（BM25 + TF向量 + RRF），对齐 Python 版 hybrid_search。
@@ -28,8 +40,117 @@ public class LongTermMemoryService {
     private double avgDocLen = 0.0;
 
     public LongTermMemoryService() {
-        loadDefaultKnowledgeBase();
+        loadKnowledgeBase();
         rebuildIndex();
+    }
+
+    /**
+     * 知识入库流水线：优先从知识库目录扫描加载 .md / .txt 文档（按目录 / 文件名作为来源），
+     * 目录不存在或为空时回退到内置默认知识库（对齐 Python 版 dataset_v2 24 篇）。
+     *
+     * 知识库目录顺序（取第一个存在的）：
+     *   1) 环境变量 SMARTCS_KB_DIR
+     *   2) ../knowledge_base（项目根目录，与 Python 版共用）
+     *   3) ./knowledge_base
+     */
+    private void loadKnowledgeBase() {
+        List<Path> kbDirs = new ArrayList<>();
+        String envDir = System.getenv("SMARTCS_KB_DIR");
+        if (envDir != null && !envDir.isBlank()) kbDirs.add(Paths.get(envDir));
+        kbDirs.add(Paths.get("..", "knowledge_base"));
+        kbDirs.add(Paths.get("knowledge_base"));
+
+        for (Path dir : kbDirs) {
+            int loaded = loadFromDirectory(dir);
+            if (loaded > 0) {
+                System.out.println("[KB] 从目录加载 " + loaded + " 篇文档: " + dir.toAbsolutePath());
+                return;
+            }
+        }
+        // 目录为空或不存在 → 内置默认知识库
+        loadDefaultKnowledgeBase();
+        System.out.println("[KB] 未找到知识库目录，使用内置默认知识库 " + documents.size() + " 篇");
+    }
+
+    /** 扫描目录（含子目录）加载知识文档，返回加载篇数（按切块后 chunk 计）。MD/TXT 直读，PDF/Word 走 Tika。 */
+    private int loadFromDirectory(Path dir) {
+        if (!Files.isDirectory(dir)) return 0;
+        int count = 0;
+        try (Stream<Path> walk = Files.walk(dir)) {
+            List<Path> files = walk
+                    .filter(Files::isRegularFile)
+                    .filter(this::isSupportedDoc)
+                    .sorted()
+                    .toList();
+            for (Path f : files) {
+                try {
+                    String content = extractText(f).trim();
+                    if (content.isEmpty()) continue;
+                    // 按 512 字符切块（含 128 重叠），对齐 Python 版分块策略
+                    List<String> chunks = chunkText(content, 512, 128);
+                    String source = dir.relativize(f).toString().replace(File.separatorChar, '/');
+                    for (String chunk : chunks) {
+                        addDocument(chunk, source);
+                        count++;
+                    }
+                } catch (Exception e) {
+                    System.err.println("[KB] 读取失败: " + f + " -> " + e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("[KB] 扫描目录失败: " + dir + " -> " + e.getMessage());
+            return 0;
+        }
+        return count;
+    }
+
+    /** 是否支持的知识文档格式：.md/.txt 直读；PDF/Word/PPT/HTML/RTF 走 Tika。 */
+    private boolean isSupportedDoc(Path p) {
+        String n = p.getFileName().toString().toLowerCase();
+        return n.endsWith(".md") || n.endsWith(".txt") || n.endsWith(".markdown")
+                || n.endsWith(".pdf") || n.endsWith(".doc") || n.endsWith(".docx")
+                || n.endsWith(".ppt") || n.endsWith(".pptx") || n.endsWith(".html") || n.endsWith(".rtf");
+    }
+
+    /** 提取文档纯文本：MD/TXT 直读（并清掉 markdown 标题）；其他格式经 Apache Tika AutoDetectParser 抽取。 */
+    private String extractText(Path f) throws Exception {
+        String n = f.getFileName().toString().toLowerCase();
+        if (n.endsWith(".md") || n.endsWith(".txt") || n.endsWith(".markdown")) {
+            return cleanMarkdown(Files.readString(f, StandardCharsets.UTF_8));
+        }
+        try (InputStream in = Files.newInputStream(f)) {
+            BodyContentHandler handler = new BodyContentHandler(-1);
+            Metadata metadata = new Metadata();
+            new AutoDetectParser().parse(in, handler, metadata);
+            return handler.toString();
+        }
+    }
+
+    /** 简单清洗：去掉 markdown 标题行（# 开头），避免检索内容混入无意义标题 token。 */
+    private static String cleanMarkdown(String text) {
+        StringBuilder sb = new StringBuilder(text.length());
+        for (String line : text.split("\n", -1)) {
+            if (line.trim().startsWith("#")) continue;
+            sb.append(line).append('\n');
+        }
+        return sb.toString();
+    }
+
+    /** 文本分块：固定长度 + 重叠窗口（对齐 Python LongTermMemory._chunk_text）。 */
+    private static List<String> chunkText(String text, int chunkSize, int overlap) {
+        List<String> chunks = new ArrayList<>();
+        if (text.length() <= chunkSize) {
+            chunks.add(text);
+            return chunks;
+        }
+        int start = 0;
+        while (start < text.length()) {
+            int end = Math.min(start + chunkSize, text.length());
+            chunks.add(text.substring(start, end).trim());
+            if (end >= text.length()) break;
+            start = end - overlap;
+        }
+        return chunks;
     }
 
     private void loadDefaultKnowledgeBase() {

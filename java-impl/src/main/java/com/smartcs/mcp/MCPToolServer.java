@@ -1,6 +1,7 @@
 package com.smartcs.mcp;
 
 import com.smartcs.biz.OrderRepository;
+import com.smartcs.biz.RiskWindowService;
 import com.smartcs.biz.TicketRepository;
 import com.smartcs.memory.LongTermMemoryService;
 import org.springframework.stereotype.Component;
@@ -27,13 +28,16 @@ public class MCPToolServer {
     private final OrderRepository orderRepository;
     private final TicketRepository ticketRepository;
     private final LongTermMemoryService longTermMemory;
+    private final RiskWindowService riskWindowService;
 
     public MCPToolServer(OrderRepository orderRepository,
                          TicketRepository ticketRepository,
-                         LongTermMemoryService longTermMemory) {
+                         LongTermMemoryService longTermMemory,
+                         RiskWindowService riskWindowService) {
         this.orderRepository = orderRepository;
         this.ticketRepository = ticketRepository;
         this.longTermMemory = longTermMemory;
+        this.riskWindowService = riskWindowService;
         registerDefaultTools();
     }
 
@@ -134,12 +138,14 @@ public class MCPToolServer {
     }
 
     private Map<String, Object> handleRiskCheck(Map<String, Object> args) {
+        String userId = str(args.get("user_id"));
         String action = str(args.get("action"));
         double amount = num(args.get("amount"));
 
         String riskLevel = "low";
         List<String> reasons = new ArrayList<>();
 
+        // 1) 单笔金额规则（即时风险）
         if ("refund".equals(action) && amount >= 5000) {
             riskLevel = "high";
             reasons.add("大额退款(" + amount + "元)，需人工复核");
@@ -151,13 +157,24 @@ public class MCPToolServer {
             reasons.add("金额1万-5万，中风险");
         }
 
+        // 2) 滑动窗口行为风控（实时风险画像：频率 + 窗口累计金额）
+        RiskWindowService.RiskResult window = riskWindowService.evaluate(userId, action, amount);
+        if ("high".equals(window.riskLevel())) {
+            riskLevel = "high";
+        } else if ("medium".equals(window.riskLevel()) && !"high".equals(riskLevel)) {
+            riskLevel = "medium";
+        }
+        reasons.addAll(window.reasons());
+
         return Map.of(
                 "success", true,
                 "result", Map.of(
                         "risk_level", riskLevel,
                         "reasons", reasons,
                         "action", action != null ? action : "",
-                        "amount", amount
+                        "amount", amount,
+                        "window_event_count", window.windowEventCount(),
+                        "window_amount", Math.round(window.windowAmount() * 100) / 100.0
                 )
         );
     }

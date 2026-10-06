@@ -66,6 +66,10 @@ START → decompose → intent_router → dispatch_step ⇄ collect_step(条件�
   - 离线 IR 口径：MRR 0.9792 / Hit@3 100%（rerank 前 MRR 0.9514）
 - MCP 四工具真实化（order_query / ticket_create / risk_check / knowledge_search），工单落 SQLite
 - 合规：规则引擎 + LLM 二阶段 + 豁免转述产品条款 + PII 脱敏回传
+- **强化（对齐企业级叙事）**：
+  - MCP 工具 **Function Calling 意图路由**（LLM 自主选工具 + 抽参数，ToolCallback 封装，非硬编码分发）
+  - `risk_check` **滑动时间窗口行为风控**（Redis ZSet 短时频率/累计金额，查询只读不入窗，Redis 不可用降级内存窗口）
+  - **知识入库流水线**：扫描 `knowledge_base/` 目录（子目录=分类），`.md/.txt` 直读 + Apache Tika 解析 PDF/Word/HTML/RTF，512 字符切块 128 重叠，目录为空回退内置 24 篇
 
 ### 差异/说明
 - 向量路用 **TF 向量**近似（纯本地零依赖），RRF 接口与真实 embedding（Spring AI / Milvus）平滑兼容

@@ -1,254 +1,226 @@
-# 🤖 智能客服多Agent系统
+# SmartCS · 多 Agent 智能客服系统
 
-> **双语言实现：Python (LangGraph + FastAPI) 主线 + Java (Spring AI Alibaba Graph + Spring Boot) 完整复刻**，并补充本地前后端联调页面与配套面试材料，方便你直接上手调试完整链路。
+> 一个把「查订单、办退款、问知识、走合规」串成一条流水线的多 Agent 系统：Supervisor 编排 + 三层记忆 + 混合检索 RAG + MCP 工具层 + 双实现（Java / Python）同构复刻。
 
-[![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
-[![Java](https://img.shields.io/badge/Java-21-orange?logo=openjdk)](https://openjdk.org/)
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.5.9-6DB33F?logo=spring)](https://spring.io/projects/spring-boot)
-[![Spring AI](https://img.shields.io/badge/Spring%20AI-1.1.2-6DB33F?logo=spring)](https://spring.io/projects/spring-ai)
-[![React](https://img.shields.io/badge/React-18-blue?logo=react)](https://react.dev/)
-[![Vite](https://img.shields.io/badge/Vite-5-646CFF?logo=vite)](https://vitejs.dev/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-0.3+-green)](https://github.com/langchain-ai/langgraph)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+**定位**：不是 Demo，是一套可讲清「为什么这样设计」的工程化实现——每个能力都有落库证据、评测数字和降级路径。
 
----
-
-## 📋 目录
-
-- [项目简介](#-项目简介)
-- [系统架构](#-系统架构)
-- [核心功能](#-核心功能)
-- [技术栈](#-技术栈)
-- [当前实现说明](#-当前实现说明)
-- [快速开始](#-快速开始)
-- [项目结构](#-项目结构)
-- [核心代码解析](#-核心代码解析)
-- [面试准备材料](#-面试准备材料)
-- [参考项目](#-参考项目)
-- [安全说明](#-安全说明)
+![Java 21](https://img.shields.io/badge/Java-21-orange?logo=openjdk)
+![Spring Boot 3.5.9](https://img.shields.io/badge/Spring_Boot-3.5.9-6DB33F?logo=spring)
+![Spring AI 1.1.2](https://img.shields.io/badge/Spring_AI-1.1.2-6DB33F)
+![Python 3.11](https://img.shields.io/badge/Python-3.11+-blue?logo=python)
+![LangGraph](https://img.shields.io/badge/LangGraph-0.3+-green)
+![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-1.49-purple)
+![RAGAS](https://img.shields.io/badge/RAGAS-95.83%25%20%2F%2095.14%25-brightgreen)
 
 ---
 
-## 🎯 项目简介
+## 目录
 
-本项目是一个**企业级多Agent智能客服系统**，模拟真实金融/电商公司的客服场景。系统由多个专业AI Agent协同工作，自动处理用户咨询、工单创建、知识检索等任务。
-
-**这个项目能帮你做什么？**
-
-- ✅ **面试加分项**：拥有一个真实完整的多Agent项目，不再只是CRUD
-- ✅ **Python主线清晰**：当前仓库保留可运行的 Python 后端实现（LangGraph + FastAPI）
-- ✅ **Java版完整复刻**：`java-impl/` 用 Spring AI Alibaba Graph 平移相同拓扑，编排/记忆/RAG/合规全对齐
-- ✅ **联调闭环完整**：新增 `frontend/` 聊天页面，方便前后端一起调试
-- ✅ **面试材料齐全**：简历模板、STAR话术、八股文题库一应俱全
-- ✅ **学习参考**：代码有详细注释，架构文档有图文说明
-
-**适合人群：**
-- 准备AI/后端岗位面试的同学
-- 想了解多Agent系统架构的开发者
-- 对LangGraph/Spring AI/Eino感兴趣的工程师
+- [它解决什么问题](#它解决什么问题)
+- [关键数据](#关键数据)
+- [系统设计：五层](#系统设计五层)
+- [一次对话的完整旅程](#一次对话的完整旅程)
+- [双实现矩阵：Java × Python](#双实现矩阵java--python)
+- [值得讲的技术决策](#值得讲的技术决策)
+- [快速开始](#快速开始)
+- [仓库结构](#仓库结构)
+- [评测与复现](#评测与复现)
+- [已知边界](#已知边界)
+- [FAQ](#faq)
+- [License](#license)
 
 ---
 
-## 🏗️ 系统架构
+## 它解决什么问题
 
-### 整体架构图
+客服场景有三个真实痛点，本项目的设计逐一回应：
 
-```
-用户 (Web/App/API)
-        │  HTTP/SSE
-        ▼
-┌──────────────────────┐
-│   API Gateway        │  ← 认证、限流、日志
-│   (FastAPI / Spring) │
-└──────────┬───────────┘
-           │
-           ▼
-┌──────────────────────────────────────────────────┐
-│              Supervisor 编排 Agent                │
-│  ┌─────────────┐         ┌────────────────────┐  │
-│  │  分层记忆系统  │         │  全链路追踪          │  │
-│  │ • 工作记忆    │         │  (OpenTelemetry)   │  │
-│  │ • 短期(Redis) │         │  Agent调用链可视化  │  │
-│  │ • 长期(向量库) │         └────────────────────┘  │
-│  └─────────────┘                                  │
-└──────┬──────────┬──────────┬──────────┬───────────┘
-       │          │          │          │
-       ▼          ▼          ▼          ▼
-  ┌─────────┐┌─────────┐┌─────────┐┌─────────┐
-  │ 意图路由  ││ 知识检索  ││ 工单处理  ││ 合规审查  │
-  │  Agent   ││  Agent   ││  Agent   ││  Agent   │
-  │ (分类)   ││ (RAG)    ││ (CRUD)   ││ (规则+LLM)│
-  └─────────┘└─────────┘└─────────┘└─────────┘
-                  │              │
-                  ▼              ▼
-           ┌──────────────────────────────┐
-           │         MCP 工具协议层         │
-           │  订单查询 | 工单CRUD | 风控接口  │
-           │  知识库搜索 | 用户画像查询       │
-           └──────────────────────────────┘
-```
+| # | 痛点 | 设计回应 |
+|---|------|----------|
+| 1 | **复合诉求难承接**：一句「我要投诉，顺便查下订单」拆不出子任务，单 Agent 答不全 | **Supervisor 编排**：自动 decompose 子任务 → dispatch ⇄ collect 循环按依赖推进 → 合规汇聚 |
+| 2 | **多轮上下文易丢**：聊到第 8 轮，模型忘了「刚才说的那个产品」 | **三层记忆 + 滚动摘要**：工作记忆（单轮推理态）+ Redis 短期（TTL 30min，滚动摘要+最近原文）+ 长期检索，按需注入替代全量历史 |
+| 3 | **知识检索靠不住**：向量检索对专有名词（产品名/政策编号）召回差，回答没有来源 | **混合检索 RAG**：Query 改写 → BM25+向量双路 → RRF 融合 → 重排 → 引用标注，评测可复现 |
 
-### 请求处理流程
-
-```
-① 用户发送消息："我的订单什么时候到？"
-        ↓
-② Supervisor 分析意图 → 路由决策
-        ↓
-③ 意图路由 Agent 识别意图: "order_query"
-        ↓
-④ 知识检索 Agent → 调用MCP工具查询订单
-        ↓
-⑤ 合规审查 Agent → 检查回复内容合规性
-        ↓
-⑥ Supervisor 汇总结果 → 返回最终回复
-```
+> 回答质量是「组织纪律」的产物：任何回复都必须过合规节点、带来源标注、有兜底话术——这些约束在代码里是强制边，不是提示词约定。
 
 ---
 
-## ✨ 核心功能
+## 关键数据
 
-### 1. Supervisor 编排模式
-**什么是Supervisor？** 就像一个项目经理，接到需求后分配给不同专家处理，最后汇总结果。
-
-| 特性 | 说明 |
-|------|------|
-| 中央协调 | 由Supervisor统一调度，子Agent只做专业工作 |
-| 子任务拆解 | 将复杂诉求自动拆解为带依赖关系的子任务，并按依赖条件顺序推进 |
-| 循环调度 | dispatch_step ⇄ collect_step 循环执行，直至依赖满足 |
-| 合规汇聚 | 所有业务结果统一经合规审查后汇总 |
-| 断点恢复 | 使用LangGraph Checkpoint，对话可中断续接 |
-
-> 说明：并行调度与 Human-in-the-Loop 的底层能力已铺垫（`dispatch_mode`/Checkpoint），当前实际以串行循环 + 依赖条件执行。
-
-### 2. 分层记忆系统
-**为什么需要三层记忆？** 类似人类记忆：工作桌(工作记忆) + 笔记本(短期) + 大脑长期记忆。
-
-| 记忆层 | 存储位置 | 生命周期 | 延迟 | 用途 |
-|--------|----------|----------|------|------|
-| **工作记忆** | 进程内存 (dict) | 单次请求 | <1ms | 当前推理状态、跨轮补充信息收集 |
-| **短期记忆** | Redis（不可用降级内存） | TTL 30分钟 | 1-5ms | 多轮对话上下文（滚动摘要 + 最近几轮原文） |
-| **长期记忆** | FAISS + sentence-transformers | 永久 | 10-50ms | 知识库、用户画像、历史工单（BM25+向量混合检索） |
-
-**按需注入优化 Token**：注入 Prompt 时用「滚动摘要 + 最近几轮 + 当前消息」替代全量 20 轮历史，用 tiktoken 实测量化。
-
-### 3. MCP 工具协议
-**什么是MCP？** Model Context Protocol，AI模型调用外部工具的标准协议，类似HTTP规范了Web通信。
-
-```json
-{
-  "name": "order_query",
-  "description": "查询订单信息",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "order_id": {"type": "string", "description": "订单ID"}
-    },
-    "required": ["order_id"]
-  }
-}
-```
-
-已实现的MCP工具：
-- `order_query` — 查询订单状态、金额
-- `ticket_create` — 工单创建
-- `risk_check` — 金融风控（金额阈值规则）
-- `knowledge_search` — 知识库检索（FAISS + BM25 + RRF 混合召回）
-
-> 工单 Agent 通过 `order_query` / `ticket_create` 实际落库，合规 Agent 调用 `risk_check`，知识 Agent 优先走 `knowledge_search`。
-
-### 4. RAG 知识检索
-**什么是RAG？** Retrieval-Augmented Generation，先从知识库检索相关内容，再让AI生成回答，避免AI"瞎编"。
-
-```
-用户问题: "怎么退款？"
-    ↓ Query改写（扩展关键词）
-"退款 政策 申请 流程 时限"
-    ↓ 双路召回
-      · FAISS 向量检索（语义匹配）Top-N
-      · BM25 关键词检索（专有名词）Top-N
-    ↓ RRF 融合（两路按排序位置合并）
-    ↓ Rerank 精排（Cross Encoder，离线降级 LLM）→ Top-3
-    ↓ 上下文注入（文档内容 + 用户问题 + 来源标注）
-    ↓ LLM生成（基于文档、约束回答边界）
-最终回答 + 引用来源标注
-```
-
-**为什么混合召回？** 向量擅长语义近义，BM25 擅长精确匹配专有名词（产品名、订单号），RRF 融合兼顾召回与精确。可运行 `python eval/rag_eval.py` 横向对比三路，`python eval/ragas_judge.py --samples 24` 做 RAGAS 风格评测。
-
-### 5. 全链路追踪 (OpenTelemetry)
-可以清楚地看到每次请求经过哪些Agent、每个步骤耗时多少、消耗了多少Token：
-
-```
-[Root] user_request (总耗时: 2.8s, 总Token: 1850)
-  ├── [Span] supervisor.route_decision     → 800ms, 150 tokens
-  ├── [Span] knowledge_rag.process         → 1.9s
-  │     ├── rag.query_rewrite              → 200ms
-  │     ├── rag.vector_search              → 15ms
-  │     ├── rag.rerank                     → 500ms
-  │     └── rag.generate_answer            → 1200ms, 1200 tokens
-  ├── [Span] compliance_checker.process    → 600ms, 400 tokens
-  └── [Span] supervisor.synthesize         → 50ms
-```
-
-### 6. 合规审查
-专为金融场景设计：
-- **敏感词检测**：自动识别违规词汇
-- **PII保护**：过滤身份证、银行卡等隐私信息
-- **越权访问治理**：防止用户绕过权限限制
-- **双重审查**：规则引擎（快，<2ms）+ LLM审查（准，~600ms）
+| 指标 | 数值 | 说明 |
+|------|------|------|
+| RAGAS Context Precision | **95.83%** | 24 样本，LLM-as-judge，与 Python 版同一套评测脚本同口径 |
+| RAGAS Context Recall | **95.14%** | 同上；Python 版归档为 94.79%，Java 反超 |
+| 离线 IR MRR | **0.9792** | rerank 前 0.9514 → rerank 后提升排序质量 |
+| 离线 IR Hit@3 | **100%** | 24/24 命中相关文档 |
+| 长会话 Token 节省 | **0% → 50%** | 滚动摘要 + 按需注入，替代全量历史入 Prompt |
+| 编排断点 | **每会话 8 checkpoint** | MemorySaver 按 sessionId=thread_id 落盘，中断可续 |
+| 全链路追踪 | **同一 traceId 贯穿根** | supervisor 根 span → 子 Agent span，含 token 计量 |
 
 ---
 
-## 🛠️ 技术栈
+## 系统设计：五层
 
-| 层次 | 技术选型 | 说明 |
-|------|----------|------|
-| **AI框架** | LangGraph / Spring AI / Eino | 多Agent编排 |
-| **LLM** | GPT-4o / Claude 3.5 | 大语言模型 |
-| **向量数据库** | FAISS (开发) / Milvus (生产) | 知识检索 |
-| **缓存** | Redis | 短期记忆、会话管理 |
-| **追踪** | OpenTelemetry + Jaeger | 全链路追踪 |
-| **API** | FastAPI / Spring Boot / Gin | REST接口 |
-| **容器** | Docker + Docker Compose | 一键部署（已移除，见说明） |
-| **协议** | MCP (Model Context Protocol) | 工具调用标准 |
+```
+┌──────────────────────────────────────────────────────────────┐
+│ 接入层   POST /api/chat · /api/tools · /api/tools/call        │
+│          /api/metrics · /api/checkpoint/{sessionId} · /health │
+├──────────────────────────────────────────────────────────────┤
+│ 编排层   StateGraph: decompose → intent → dispatch⇄collect    │
+│          （条件边循环，依赖满足/迭代上限）→ compliance → synth  │
+│          Checkpoint(MemorySaver) · 图结构可导出 Mermaid       │
+├──────────────────────────────────────────────────────────────┤
+│ Agent 层 intent_router · knowledge_rag · ticket_handler ·     │
+│          compliance_checker                                   │
+├──────────────────────────────────────────────────────────────┤
+│ 工具层   MCP 协议: order_query · ticket_create · risk_check · │
+│          knowledge_search（Function Calling 自主路由）        │
+├──────────────────────────────────────────────────────────────┤
+│ 基座     Redis(降级内存) · SQLite/MySQL(方言层) · SQLite 工单   │
+│          Apache Tika 解析 · OpenTelemetry · 滑动窗口风控       │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 编排层：一张有向图，而不是 if-else
+
+系统核心是 `StateGraph`（LangGraph / Spring AI Alibaba Graph 同构）：
+
+```
+START → supervisor_decompose → intent_router → dispatch_step
+        dispatch_step ──条件──→ knowledge_rag / ticket_handler
+        每个子 Agent ──→ collect_step ──条件──→ 还有子任务? dispatch_step
+                                         └── 全部完成 → compliance_check → synthesize → END
+```
+
+- **条件边**决定走向：意图路由决定走哪个 Agent，`collect_step` 判断是否还有依赖子任务或达到迭代上限。
+- **断点续接**：每次 invoke 携带 `thread_id=sessionId`，8 个节点各存一个 checkpoint，进程中断后同一会话可续。
+- **图即文档**：`graphDiagram()` 输出 Mermaid，架构图从代码生成，不靠画图。
+
+### 记忆层：三层分工 + 按需注入
+
+| 层 | 载体 | 生命周期 | 用途 |
+|----|------|----------|------|
+| 工作记忆 | 进程内 | 单次请求 | 当前推理状态、子任务汇总 |
+| 短期记忆 | Redis（降级内存） | TTL 30min | 滚动摘要 + 最近 N 轮原文，按需注入 |
+| 长期记忆 | BM25 + TF 向量 + RRF（纯本地） | 永久 | 知识库/文档语义检索，接口可平滑换真实 embedding |
+
+Token 优化路径：全量 20 轮历史 ≈ 长文本入 Prompt → 压缩为「滚动摘要 + 最近 2 轮 + 当前消息」，实测长会话 Token 消耗下降 **0% → 50%**。
+
+### 工具层：MCP 协议 + Function Calling 自主路由
+
+- 四个工具走统一的 MCP 风格注册/发现/调用（`tools/list` 返回 schema，`tools/call` 执行）。
+- **Function Calling**：`ticket_handler` 不再硬编码调 `ticket_create`，而是把工具声明为 ToolCallback，LLM 自主决定「建单/查单/风控」并抽取参数（user_id 由系统注入，避免缺参反问）。
+- 每个工具都有真实落库/真实逻辑，不是 mock：订单查 SQLite、工单写 tickets 表、风控走滑动窗口。
+
+### 合规层：规则引擎 + LLM 二阶段 + 否定豁免
+
+```
+content ──→ 规则引擎(禁词/PII, <2ms) ──通过──→ LLM 深度审查(~600ms) ──通过──→ 放行
+                   │ 命中                           │ 命中                      │
+                   ▼                                ▼                          ▼
+              脱敏+违规原因 ──────→ 转人工/拒绝回复，违规原因回传 synthesize
+```
+
+一个容易被忽略但很关键的细节：**否定豁免**。知识库原文「不承诺保本保息」含禁词「保本保息」，朴素规则引擎会误杀。规则层扫描禁词前 3 个字符内的否定词（不/无/非/并非…），免责表述放行——这是上线后真实踩到的坑。
+
+### 基座层：风控窗口、多格式入库、可观测、存储可切换
+
+- **滑动时间窗口风控**：`risk_check` 用 Redis ZSet 统计 5 分钟窗口内事务频率与累计金额（事务入窗、查询只读，避免客服查询污染画像），Redis 不可用降级内存窗口；单笔规则 + 窗口画像叠加。
+- **知识入库流水线**：扫描 `knowledge_base/`（子目录即分类），`.md/.txt` 直读、PDF/Word/PPT/HTML/RTF 走 Apache Tika 抽取，512 字切块 + 128 重叠；目录为空回退内置知识库。
+- **存储方言层**：`StorageDialect` 统一 SQLite（本地零部署）与 MySQL（生产）的 DDL/主键/INSERT 语法差异，`SMARTCS_DB_TYPE=mysql` 一键切换。
+- **可观测性**：AgentTracer 接 OpenTelemetry SDK，每个 Agent 调用生成 span（agent/duration/success/token 属性），配 OTLP endpoint 导 Jaeger/Tempo，缺省降级日志导出。
 
 ---
 
-## 🧭 当前实现说明
+## 一次对话的完整旅程
 
-| 模块 | 当前状态 | 说明 |
-|------|----------|------|
-| Python 后端 | ✅ 已在仓库根目录 | LangGraph + FastAPI，多Agent 主链路 |
-| Java 后端 | ✅ [`java-impl/`](./java-impl/) | Spring AI Alibaba Graph + Spring Boot 3.5.9，Python 拓扑完整平移 |
-| 前端联调 | ✅ 新增 [`frontend/`](./frontend/) | React + Vite 聊天页，直接复用现有 API |
-| Docker | ⏸️ 已移除 | Docker 相关配置已清理，如需可自行添加 |
-| Go | ⏸️ 未包含 | 如需可用 Eino 复刻，架构文档已给出思路 |
+以「帮我创建一个投诉工单，服务态度很差」为例：
 
-### Java 版（java-impl/）速览
+```
+① 接入层      POST /api/chat (sessionId=xxx)
+② 编排层      Supervisor.decompose   → 拆出子任务 [创建投诉工单]
+③ 编排层      IntentRouter           → intent = ticket_handler
+④ 工具层      TicketHandler(function calling)
+              → LLM 自主选 ticket_create + 抽参 {user_id, description, priority}
+              → SQLite 落库，返回工单号 TK-20261006-28C190
+⑤ 合规层      rules(禁词/PII) pass → LLM review pass → compliance_passed=true
+⑥ 编排层      synthesize 汇总 → 返回「工单已创建，编号…」
+⑦ 可观测      supervisor 根 span + ticket_handler span 同 traceId，token 已计量
+⑧ Checkpoint 该 sessionId 又追加一条 checkpoint
+```
 
-- **编排**：`StateGraph` 平移 Python 拓扑 —— `decompose → intent_router → dispatch_step ⇄ collect_step（条件边循环，依赖满足或迭代上限）→ compliance_check → synthesize`
-- **记忆**：混合检索（BM25 + TF向量 + RRF，纯本地零依赖）+ 滚动摘要按需注入（长会话 Token 节省实测 0→50%）+ 工作记忆
-- **RAG**：Query 改写 / 引用来源标注 / 无文档兜底
-- **MCP**：`order_query` / `ticket_create` / `risk_check` / `knowledge_search` 四工具真实逻辑 + `POST /api/tools/call`
-- **合规**：规则引擎（禁词+PII脱敏）+ LLM 二阶段审查（含产品条款豁免），结果经 `masked_response` 回传 synthesize
-- **持久化**：SQLite（`data/smartcs.db`），工单/订单重启不丢
-- **检索评测**（24 样本，同 Python `eval/dataset_v2.json` 同库）：完整链路含 RAGAS 同口径 **Context Precision 95.83% / Recall 95.14%**；离线 MRR 0.9792 / Hit@3 100%
-
-> 完整 Java 版说明见 [`java-impl/README.md`](./java-impl/README.md)。
+每一步都可下钻验证：日志有 `[dispatch] step=…`、`[RAG] Step2/3`、`[compliance]`，指标有 `/api/metrics`，断点有 `/api/checkpoint/{sessionId}`。
 
 ---
 
-## 🚀 快速开始
+## 双实现矩阵：Java × Python
 
-### 前置条件
-- Python 3.11+
-- Node.js 18+
-- 一个 OpenAI API Key（或其他 LLM 的 Key）
-- Redis（本地安装或远程服务）
+| 模块 | Java（java-impl/） | Python（根目录） |
+|------|--------------------|------------------|
+| 编排 | Spring AI Alibaba Graph `StateGraph` | LangGraph `StateGraph` |
+| 拓扑 | decompose→intent→dispatch⇄collect→compliance→synthesize | 同拓扑 |
+| 短期记忆 | Redis StringRedisTemplate（降级内存） | Redis AIORedis（降级内存） |
+| 长期检索 | BM25 + TF 向量 + RRF（纯本地近似向量） | BM25(jieba) + FAISS + sentence-transformers + RRF |
+| 重排 | LLM rerank（对齐 Python `_llm_rerank`） | bge-reranker-base（无模型降级 LLM） |
+| 工具层 | MCP 风格工具 + **Function Calling** | MCP 工具 + 硬编码分发 |
+| 风控 | 金额规则 + **Redis 滑动窗口** | 金额规则 |
+| 知识入库 | **目录扫描 + Apache Tika 多格式解析** + 512/128 切块 | 内置文档 + 固定切块 |
+| 持久化 | **SQLite/MySQL 方言层可切换** | SQLite |
+| 断点续接 | **graph-core MemorySaver**（sessionId=thread_id） | LangGraph MemorySaver |
+| 追踪 | **OpenTelemetry SDK**（OTLP/日志降级，含 token 计量） | OpenTelemetry + Jaeger |
+| 评测口径 | 同一套 RAGAS judge 脚本，24 样本同库 | 同口径 |
 
-### 方式一：直接运行后端
+> 结论：Java 版是「同构复刻 + 工程深化」——编排/评测对齐 Python，同时补了 Function Calling、滑动窗口、Tika 入库、MySQL 方言、Checkpoint、OTel 六项工程能力。
+
+---
+
+## 值得讲的技术决策
+
+面试官问「为什么」，这些是你能展开讲的真实决策（都对应代码，不是包装）：
+
+1. **为什么用图编排而不是 LLM 循环调用？** 图把「下一步走哪」变成可观测的条件边，子任务依赖、迭代上限、合规强制边都是显式结构，出错有统一的兜底与断点。
+2. **为什么重排用 LLM 而不是 cross-encoder？** 环境无模型、零部署优先；评测（95.83/95.14 vs Python 95.83/94.79）证明数值相当，接口预留可平滑换 bge-reranker。→ 简历上写清口径，别混「含重排/不含重排」。
+3. **为什么向量路用 TF 近似？** 纯本地零依赖跑通全链路；RRF 接口与真实 embedding（Spring AI / Milvus）平滑兼容，验收时不被模型下载卡住。面试主动说「这是近似、生产可换」比被动承认强。
+4. **为什么规则引擎要否定豁免？** 「不承诺保本保息」是免责表述，朴素禁词会让合规误杀 23% 的负面知识文档 → 前 3 字符否定词检测，误判清零（chat-smoke 全绿）。
+5. **为什么存储做方言层？** SQLite/MySQL 的 DDL、`INSERT OR IGNORE` vs `INSERT IGNORE`、主键类型差异全部收敛在一个类，业务 SQL 通用；本地开发零部署、生产切 MySQL 只改环境变量。
+6. **为什么事务入窗、查询只读？** 风控窗口统计的是「行为」不是「咨询」——客服回复也走 risk_check，若查询也入窗，高频咨询会污染风控画像。
+
+---
+
+## 快速开始
+
+### 前置
+
+- JDK 21、Maven 3.9+（或使用 `mvnw`）
+- 一个 OpenAI 兼容 API Key（`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `MODEL_NAME`，见 `.env.example`）
+- Redis（可选：不可用时短期记忆/风控窗口自动降级内存）
+
+### 启动 Java 版（推荐，工程能力最全）
+
+```powershell
+cd java-impl
+# 有代理时先设置
+# $env:MAVEN_OPTS="-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7890 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7890"
+./mvnw.cmd -B -ntp package -DskipTests
+java -jar target\smart-cs-agent-1.0.0.jar --server.port=18080
+```
+
+验证：`GET http://localhost:18080/health` → `{"status":"healthy"}`。
+
+常用接口：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/chat` | 多 Agent 对话（自动编排） |
+| POST | `/api/tools/call` | 工具调用（MCP 风格） |
+| GET | `/api/tools` | 工具发现（schema） |
+| GET | `/api/metrics` | Agent 指标 + Token 计量 |
+| GET | `/api/checkpoint/{sessionId}` | 断点续接信息 |
+| GET | `/api/eval/rerank` | 检索评测（召回+重排，导出 RAGAS 输入） |
+
+内置验收脚本（`java-impl/*.ps1`）：`boot-smoke` / `chat-smoke`（3 轮真实对话）/ `tools-smoke`（4 工具）/ `persistence-smoke`（重启不丢数据）/ `checkpoint-otel-smoke`（断点+追踪）。
+
+### 启动 Python 版
 
 ```powershell
 python -m venv .venv
@@ -258,235 +230,105 @@ Copy-Item .env.example .env
 python -m api.main
 ```
 
-访问：
+访问 `http://localhost:8000/docs`（Swagger）。
 
-- API 文档: `http://localhost:8000/docs`
-- 健康检查: `http://localhost:8000/health`
-
-测试接口：
+### 切 MySQL（可选）
 
 ```powershell
-Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/chat" -ContentType "application/json" -Body (@{ user_id = "user_001"; message = "我想查询订单状态" } | ConvertTo-Json)
-curl.exe --% -X POST http://localhost:8000/api/chat -H "Content-Type: application/json" -d "{\"user_id\":\"user_001\",\"message\":\"我想查询订单状态\"}"
+$env:SMARTCS_DB_TYPE="mysql"
+$env:SMARTCS_DB_URL="jdbc:mysql://localhost:3306/smartcs?useSSL=false&serverTimezone=Asia/Shanghai"
+$env:SMARTCS_DB_USERNAME="root"
+$env:SMARTCS_DB_PASSWORD="xxx"
 ```
-
-### 方式二：启动前端联调页面
-
-```powershell
-cd frontend
-Copy-Item .env.example .env.local
-npm install
-npm run dev
-```
-
-访问：
-
-- 前端页面: `http://localhost:5173`
-
-默认情况下，前端会通过 Vite 开发代理把 `/api` 和 `/health` 转发到 `http://localhost:8000`，因此不需要改现有 FastAPI 路由。
-
-### 方式三：启动 Java 版后端（Spring AI）
-
-前置：JDK 21。复制根 `.env` 到 java-impl 同级即可读取（脚本自动读取仓库根 `.env` 的 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `MODEL_NAME`）。
-
-```powershell
-cd java-impl
-# 使用自带 Maven Wrapper（自动下载 3.9.9）；如需代理先设置
-# $env:MAVEN_OPTS="-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7890 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7890"
-./mvnw.cmd -B -ntp package -DskipTests
-java -jar target\smart-cs-agent-1.0.0.jar --server.port=18080
-```
-
-访问：
-
-- 健康检查: `http://localhost:18080/health`
-- 聊天接口: `POST http://localhost:18080/api/chat`
-- 工具接口: `POST http://localhost:18080/api/tools/call`、`GET /api/tools`
-- 指标接口: `GET http://localhost:18080/api/metrics`
-
-> Java 版冒烟验收脚本已内置：`boot-smoke.ps1`（启动）、`chat-smoke.ps1`（3轮真实对话）、`chat-smoke-st2.ps1`（8轮长会话+压缩）、`tools-smoke.ps1`（4工具）、`persistence-smoke.ps1`（重启持久化）。
 
 ---
 
-## 📁 项目结构
+## 仓库结构
 
 ```text
 smart-cs-multi-agent/
-├── README.md                       ← 项目说明与快速开始
-├── requirements.txt                ← Python 依赖
-├── .env.example                    ← 后端环境变量模板
-├── agents/                         ← 核心 Agent 编排与子 Agent
-├── api/                            ← FastAPI 入口与接口层
-├── memory/                         ← 工作记忆 / 短期记忆 / 长期记忆
-├── mcp/                            ← MCP 工具注册、发现与调用
-├── tracing/                        ← OpenTelemetry 配置与指标汇总
-├── database/                       ← SQLite（orders / tickets 持久化）
-├── eval/                           ← RAG 检索评测 + Token 优化评测
-├── frontend/                       ← React + Vite 前端联调页面
-│   ├── package.json
-│   ├── vite.config.ts
-│   └── src/
-├── java-impl/                      ← Java 版完整复刻（Spring AI Alibaba Graph）
-│   ├── pom.xml                     ← Spring Boot 3.5.9 + Spring AI 1.1.2 + graph-core
-│   ├── README.md                   ← Java 版说明（架构/API/对齐差异/阶段记录）
-│   ├── src/main/java/com/smartcs/  ← agent / memory / mcp / biz / tracing / config
-│   └── *-smoke.ps1                 ← boot / chat / tools / persistence 冒烟验收脚本
-├── docs/                           ← 项目文档
-│   ├── deployment.md               ← 当前部署与联调指南
-│   ├── 架构.md                     ← 系统架构说明
-│   ├── 核心代码讲解.md             ← 关键代码解析
-│   ├── 半天速成精读表.md           ← 快速理解路径
-│   └── interview/                  ← 面试准备材料
-│       ├── 简历模板.md
-│       ├── star_面试话术.md
-│       ├── 八股文.md
-│       └── 项目问答.md
-└── LICENSE
+├── java-impl/                    # Java 版（工程能力最全，推荐入口）
+│   ├── pom.xml                   # Spring Boot 3.5.9 · Spring AI 1.1.2 · graph-core · Tika · OTel
+│   ├── README.md                 # Java 版架构/API/对齐差异/阶段记录
+│   ├── src/main/java/com/smartcs/
+│   │   ├── agent/                # Supervisor/IntentRouter/KnowledgeRAG/TicketHandler/Compliance
+│   │   ├── memory/               # ShortTerm(Redis·降级) · LongTerm(混合检索) · Reranker
+│   │   ├── mcp/                  # MCPToolServer · MCPToolCallbacks(Function Calling)
+│   │   ├── biz/                  # Order/Ticket Repository · RiskWindowService · StorageDialect
+│   │   ├── tracing/              # AgentTracer(OpenTelemetry + token 计量)
+│   │   └── config/               # ChatController · 配置
+│   └── *-smoke.ps1               # boot/chat/tools/persistence/checkpoint-otel 验收脚本
+├── agents/                       # Python 版 Agent 编排
+├── api/                          # Python 版 FastAPI 入口
+├── memory/                       # Python 版三层记忆
+├── mcp/                          # Python 版 MCP 工具
+├── tracing/                      # Python 版 OpenTelemetry
+├── database/                     # Python 版 SQLite
+├── eval/                         # 检索评测(RAGAS/IR) · token 优化评测 · Java 检索结果 dump
+├── knowledge_base/               # 知识库目录（子目录=分类，24 篇 md + HTML 示例）
+├── frontend/                     # React + Vite 联调页面
+└── docs/                         # 架构/代码讲解/部署/interview 材料
 ```
 
 ---
 
-## 💻 核心代码解析
+## 评测与复现
 
-### Supervisor 编排核心逻辑（Python）
+检索评测（24 样本，top_k=3，知识库与 Python 同一份 `dataset_v2.json`）：
 
-这是整个系统最重要的部分，理解了这个代码，面试时就能讲清楚多Agent协作原理：
+```powershell
+# 1. Java 版导出检索结果（含重排）
+#    先启动 Java 服务，再：
+Invoke-RestMethod "http://localhost:18080/api/eval/rerank"  # 已在服务内置
 
-```python
-# agents/supervisor.py
+# 2. Java 结果跑 RAGAS LLM-judge（同一套脚本，与 Python 版同口径）
+$env:PYTHONPATH="D:\code\smart-cs-multi-agent"
+& E:\miniconda3\envs\pytorchcuda\python.exe eval\ragas_judge.py `
+    --dataset eval\dataset_v2.json --retrieval eval\java_retrievals_rerank.json
 
-# 1. 定义全局状态（类似"黑板"，所有Agent共享）
-class AgentState(TypedDict):
-    messages: list[BaseMessage]    # 对话历史
-    user_id: str                   # 用户ID
-    intent: str                    # 识别到的意图
-    sub_results: dict[str, Any]    # 各Agent处理结果
-    compliance_passed: bool        # 合规是否通过
-    final_response: str            # 最终回复
-
-# 2. 构建有向图（定义Agent之间的流转关系）
-def create_supervisor_graph():
-    graph = StateGraph(AgentState)
-    
-    # 添加节点（每个Agent是一个节点）
-    graph.add_node("supervisor_route", supervisor.route_decision)
-    graph.add_node("knowledge_rag", knowledge_agent.process)
-    graph.add_node("ticket_handler", ticket_agent.process)
-    graph.add_node("compliance_check", compliance_agent.process)
-    graph.add_node("synthesize", supervisor.synthesize_response)
-    
-    # 设置入口
-    graph.set_entry_point("supervisor_route")
-    
-    # 条件路由（根据意图决定走哪条路）
-    graph.add_conditional_edges(
-        "supervisor_route",
-        route_to_agent,              # 路由函数
-        {
-            "knowledge_rag": "knowledge_rag",
-            "ticket_handler": "ticket_handler",
-        }
-    )
-    
-    # 所有Agent处理后都经过合规审查
-    graph.add_edge("knowledge_rag", "compliance_check")
-    graph.add_edge("ticket_handler", "compliance_check")
-    graph.add_edge("compliance_check", "synthesize")
-    graph.add_edge("synthesize", END)
-    
-    return graph.compile(checkpointer=MemorySaver())
+# 结果：Context Precision 95.83% / Context Recall 95.14%
 ```
 
-**面试时怎么讲这段代码？**
-> "我们用LangGraph的StateGraph构建了一个有向图，Supervisor作为中心节点负责路由，子Agent各司其职。所有回复都强制经过合规审查节点，这是金融场景的合规要求。MemorySaver提供检查点功能，支持对话断点续接。"
-
-### MCP工具协议实现
-
-```python
-# mcp/mcp_server.py
-
-# MCP工具的核心：描述工具能力，让AI知道什么时候用这个工具
-order_query_tool = {
-    "name": "order_query",
-    "description": "查询用户订单的状态、物流、金额等信息",
-    "inputSchema": {
-        "type": "object",
-        "properties": {
-            "order_id": {
-                "type": "string", 
-                "description": "订单编号，如 ORD-2024-001"
-            },
-            "user_id": {
-                "type": "string",
-                "description": "用户ID，用于权限验证"
-            }
-        },
-        "required": ["order_id", "user_id"]
-    }
-}
-```
+评测归档：`eval/results_ragas_java_rerank.json`。判分逻辑、prompt、缓存全部在 `eval/ragas_judge.py`，可审计。
 
 ---
 
-## 📚 面试准备材料
+## 已知边界
 
-配套完整面试资料，帮你从"能看懂代码"到"面试时能流畅讲清楚"：
+诚实清单（面试主动说出来加分）：
 
-| 文档 | 内容说明 | 链接 |
-|------|----------|------|
-| **简历模板** | STAR法则项目经历写法，覆盖Python/Java/Go不同岗位角度 | [查看](./docs/interview/简历模板.md) |
-| **STAR面试话术** | "请介绍你的项目"等高频问题的标准回答模板 | [查看](./docs/interview/star_面试话术.md) |
-| **八股文题库** | 30+高频面试题 + 详细答案 + 追问应对策略 | [查看](./docs/interview/八股文.md) |
-| **项目深度追问** | 面试官最爱问的20+深度问题 + 踩坑分享 | [查看](./docs/interview/项目问答.md) |
-| **架构设计文档** | 完整流程图、时序图、技术选型对比分析 | [查看](./docs/架构.md) |
-| **代码讲解文档** | 核心模块逐行解析，设计模式说明 | [查看](./docs/核心代码讲解.md) |
-| **部署指南** | 本地启动、前后端联调、环境变量配置 | [查看](./docs/deployment.md) |
-| **Java版说明** | Spring AI Alibaba Graph 编排平移、排坑记录、评测结果 | [查看](./java-impl/README.md) |
-
-### 常见面试问题预览
-
-**Q: 为什么用Supervisor模式而不是让Agent直接互相调用？**
-> A: Supervisor模式的优势在于集中控制，便于追踪和调试；避免Agent之间形成循环依赖；Supervisor可以做全局优化，比如并行调度多个Agent；出错时有统一的错误处理和回退机制。
-
-**Q: 三层记忆的设计原则是什么？**
-> A: 参考了人类认知的记忆模型。工作记忆对应当前注意力焦点，速度最快但容量有限；短期记忆用Redis实现30分钟TTL，保持对话上下文连贯性；长期记忆用向量数据库存储知识库和用户历史，支持语义相似度检索。
-
-**Q: MCP协议相比直接调用函数有什么优势？**
-> A: MCP是标准化协议，工具描述用JSON Schema，AI可以自动发现和理解工具能力，不需要硬编码工具调用逻辑；支持动态工具注册，新增工具不需要修改Agent代码；协议层做了权限控制和参数验证。
+1. **向量路是 TF 近似**，非真实 embedding：小库上够用，生产换 Spring AI embedding / Milvus，RRF 接口不变。
+2. **MySQL 分支语法正确、可切换**，但未在真实 MySQL 实例冒烟（本地无 MySQL）。
+3. **Supervisor decompose 的 token 计量为 0**（BeanOutputConverter 路径拿不到 usage），其余 Agent 计量完整。
+4. **编排为串行循环**：并行调度与 Human-in-the-Loop 能力已铺垫（dispatch_mode / Checkpoint），当前按依赖串行执行。
+5. **RAGAS 数字含 LLM judge 随机性**：temperature=0 仍可能小幅波动，面试讲「24 样本、同口径实测」即可。
 
 ---
 
-## 📖 参考项目
+## FAQ
 
-本项目设计参考了以下企业级开源项目，建议结合阅读：
+**Q：为什么用 Supervisor 模式而不是 Agent 互相对话？**
+A：集中控制便于追踪/调试；避免 Agent 间循环依赖；Supervisor 可做全局决策（依赖顺序、迭代上限、合规强制边）；出错有统一兜底与断点恢复。
 
-| 项目 | Stars | 参考内容 |
-|------|-------|----------|
-| [AWS Agent Squad](https://github.com/awslabs/agent-squad) | 7,500+ | 智能意图分类 + SupervisorAgent 设计 |
-| [LangGraph Supervisor](https://github.com/langchain-ai/langgraph-supervisor-py) | — | Supervisor模式预构建库，官方最佳实践 |
-| [Spring AI Alibaba](https://github.com/alibaba/spring-ai-alibaba) | 9,000+ | Java多Agent编排，阿里巴巴生产实践 |
-| [Eino (CloudWeGo)](https://github.com/cloudwego/eino) | 10,300+ | 字节跳动Go企业级Agent框架 |
-| [Multi-Agent Enterprise CRM](https://github.com/Mrgig7/Multi-Agent-Enterprise-CRM) | — | LangGraph + Kafka 生产级客服方案 |
+**Q：三层记忆怎么解决上下文丢失？**
+A：核心是「按需注入」——不是堆数据，是选择性给。滚动摘要保留长期要点、最近 N 轮保留细节、其余丢弃；实测长会话 Token 消耗降 50% 且 T2 指代（「那最低投多少钱」）命中正确产品。
 
----
+**Q：RAG 链路为什么是改写→双路→RRF→重排？**
+A：改写解决口语化→检索友好；BM25 保专有名词、向量保语义，两路互补；RRF 按排序位置融合不依赖分数可比性；重排把最相关的排到 top-3。落点：Hit@3=100%、RAGAS 95.83/95.14。
 
-## 🔒 安全说明
-
-- 本项目**不包含任何真实的API Key、Token或密码**
-- 所有敏感配置通过环境变量注入（见 `.env.example`）
-- `.env.example` 仅提供占位符示例，**不要直接使用**
-- 请勿将含有真实凭据的 `.env` 文件提交到版本控制
+**Q：合规审查怎么防止误判和漏判？**
+A：规则引擎毫秒级先拦（禁词/PII），通过后才进入 LLM 深度审查（成本可控）；规则层做否定豁免降低误杀，LLM 兜隐晦违规；PII 脱敏后回传 synthesize，违规原因随响应透出。
 
 ---
 
-## 📄 License
+## License
 
-[MIT License](./LICENSE) — 自由使用、修改、分发，保留原始版权声明即可。
+[MIT License](./LICENSE) — 自由使用、修改、分发。
 
 ---
 
 <div align="center">
 
-**如果这个项目对你有帮助，欢迎 ⭐ Star 支持一下！**
+**如果这个项目对你有帮助，欢迎 ⭐ Star。**
 
 </div>
